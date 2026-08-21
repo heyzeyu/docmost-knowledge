@@ -28,7 +28,10 @@ Keychain or an environment variable, then forwards MCP requests over HTTPS.
 - Vector-index workflows exposed by the compatible server
 - Personal and company profiles with isolated endpoints and Keychain entries
 - Safe retry of known read-only tools across transient gateway failures
-- A strict v0.4 server-contract doctor and live smoke test
+- Optional freshness-verified Catalog Bundle and Delta consumption for
+  diagnostic orchestrators
+- A strict v0.5 core server-contract doctor and live smoke test
+- Bounded remote response streaming with a 16 MiB default limit
 - Local credential handling without storing secrets in the repository
 
 All authorization decisions remain on the Docmost server. The plugin never
@@ -83,6 +86,7 @@ keeps personal and company credentials separate:
   "defaultProfile": "personal",
   "requestTimeoutMs": 90000,
   "maxReadRetries": 1,
+  "maxResponseBytes": 16777216,
   "profiles": {
     "personal": {
       "mcpUrl": "https://docs.example.com/mcp",
@@ -133,6 +137,7 @@ variables:
 | `DOCMOST_REQUEST_TIMEOUT_MS` | Per-request timeout, from 1,000 to 300,000 ms |
 | `DOCMOST_MAX_READ_RETRIES` | Transient retries for known read tools, from 0 to 3 |
 | `DOCMOST_RETRY_DELAY_MS` | Base read-retry delay, from 0 to 5,000 ms |
+| `DOCMOST_MAX_RESPONSE_BYTES` | Maximum remote JSON response, from 1 KiB to 32 MiB |
 
 One plugin process selects one profile. To expose two profiles to Codex at the
 same time, define two intentionally named MCP server entries that run this
@@ -146,9 +151,8 @@ with an `Authorization: Bearer ...` header, and implement `tools/list` and
 `tools/call`. It should enforce token permissions independently for every
 space, operation, template, version, attachment, and vector-search action.
 
-The v0.4 contract expects all 40 page, hierarchy, template, history,
-attachment, search,
-and vector-job tools. It also verifies:
+The v0.5 core contract expects all 40 page, hierarchy, template, history,
+attachment, search, and vector-job tools from v0.4. It also verifies:
 
 - `search_docs` and `semantic_search_docs` support `rootPageId`
 - page hierarchy supports `get_page_tree`, signed `preview_page_move`,
@@ -156,6 +160,22 @@ and vector-job tools. It also verifies:
 - every mutation requires `idempotencyKey`
 - page moves and page/template updates require `expectedUpdatedAt`
 - batch moves plus template archival and deletion require explicit confirmation
+
+Catalog Bundle/Freshness is an optional, negotiated extension. A server remains
+core-compatible when it exposes neither Catalog tool. If it exposes the
+extension, it must provide both `resolve_catalog_bundle` and
+`resolve_catalog_delta` with the `qts-fact-catalog.v1` request contract. The
+proxy validates full graph closure, page hashes, deterministic fingerprints,
+freshness proof, and Delta reconstruction before returning a result to the
+caller. A partial or malformed extension fails the contract check.
+
+Every new diagnosis must send a fresh challenge and receive a new live
+freshness proof. A caller may retain static page content only under its exact
+`(page_id, updated_at, content_sha256)` tuple and may reuse that content only
+after the current Bundle or Delta revalidates the same tuple. Runtime facts and
+prior diagnostic conclusions must never be reused across diagnoses. Remote
+Monkey execution does not read Catalog; only the local diagnostic orchestrator
+consumes these tools.
 
 The local proxy handles `initialize` and `ping`, rejects redirects, validates
 remote responses, applies a configurable 90-second default timeout, preserves
@@ -183,6 +203,12 @@ the four same-space page-tree tools; the remote Docmost server must expose
 them, including signed move previews and atomic batch moves, for the strict
 doctor and live smoke checks to pass.
 
+Upgrading from v0.4 to v0.5 also requires no local configuration change. Old
+servers remain usable for all core tools. Catalog workflows become available
+only after the server advertises both optional tools. Increase
+`maxResponseBytes` only when a legitimate bounded Catalog closure exceeds the
+16 MiB default; the proxy never permits more than 32 MiB.
+
 ## Development
 
 Run the local test suite:
@@ -193,7 +219,7 @@ npm test
 ```
 
 Validate local configuration, Keychain access, the remote tool catalog, and the
-strict v0.4 contract:
+strict v0.5 core contract and optional Catalog capability:
 
 ```bash
 npm run doctor
@@ -207,7 +233,7 @@ npm run test:live
 ```
 
 During a staged server upgrade, append `-- --warn` to either command to report
-missing v0.4 capabilities without failing the process.
+missing core or partial Catalog capabilities without failing the process.
 
 ## License
 

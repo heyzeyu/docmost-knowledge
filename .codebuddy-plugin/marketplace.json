@@ -10,7 +10,7 @@
       "name": "docmost-knowledge",
       "source": "./plugins/docmost-knowledge",
       "description": "Permission-aware Docmost knowledge-base search, page-tree organization, and maintenance through a Keychain-authenticated MCP connection.",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "author": {
         "name": "wzyonline-1999",
         "url": "https://github.com/wzyonline-1999"

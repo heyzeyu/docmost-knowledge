@@ -1,7 +1,7 @@
 {
   "name": "docmost-knowledge",
-  "version": "0.4.0",
-  "description": "Search, maintain, organize, cite, and use templates in private Docmost knowledge bases through a Keychain-authenticated MCP connection.",
+  "version": "0.5.0",
+  "description": "Search, maintain, organize, cite, and resolve freshness-verified Catalog bundles in private Docmost knowledge bases through a Keychain-authenticated MCP connection.",
   "author": {
     "name": "wzyonline-1999",
     "url": "https://github.com/wzyonline-1999"

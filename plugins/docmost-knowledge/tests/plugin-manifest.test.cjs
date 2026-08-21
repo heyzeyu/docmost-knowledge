@@ -19,7 +19,7 @@ test("plugin and package versions stay aligned", () => {
   const packageJson = readJson("package.json");
 
   assert.equal(manifest.name, "docmost-knowledge");
-  assert.equal(manifest.version, "0.4.0");
+  assert.equal(manifest.version, "0.5.0");
   assert.equal(packageJson.version, manifest.version);
   assert.equal(manifest.mcpServers, "./.mcp.json");
   assert.ok(manifest.interface.defaultPrompt.length <= 3);
@@ -31,10 +31,7 @@ test("mutation guidance distinguishes exact retries from changed requests", () =
     "utf8",
   );
   const operations = fs.readFileSync(
-    path.join(
-      pluginRoot,
-      "skills/docmost-knowledge/references/operations.md",
-    ),
+    path.join(pluginRoot, "skills/docmost-knowledge/references/operations.md"),
     "utf8",
   );
 
@@ -51,10 +48,7 @@ test("template guidance covers discovery, preview, and destructive safety", () =
     "utf8",
   );
   const operations = fs.readFileSync(
-    path.join(
-      pluginRoot,
-      "skills/docmost-knowledge/references/operations.md",
-    ),
+    path.join(pluginRoot, "skills/docmost-knowledge/references/operations.md"),
     "utf8",
   );
 
@@ -72,10 +66,7 @@ test("page hierarchy guidance requires previewed and atomic moves", () => {
     "utf8",
   );
   const operations = fs.readFileSync(
-    path.join(
-      pluginRoot,
-      "skills/docmost-knowledge/references/operations.md",
-    ),
+    path.join(pluginRoot, "skills/docmost-knowledge/references/operations.md"),
     "utf8",
   );
 
@@ -85,6 +76,24 @@ test("page hierarchy guidance requires previewed and atomic moves", () => {
   assert.match(operations, /never\s+calculate or send a fractional `position`/);
   assert.match(operations, /roll back the whole\s+batch/);
   assert.match(operations, /Do not request a vector reindex solely/);
+});
+
+test("Catalog guidance requires live freshness and tuple-bound cache reuse", () => {
+  const skill = fs.readFileSync(
+    path.join(pluginRoot, "skills/docmost-knowledge/SKILL.md"),
+    "utf8",
+  );
+  const operations = fs.readFileSync(
+    path.join(pluginRoot, "skills/docmost-knowledge/references/operations.md"),
+    "utf8",
+  );
+
+  assert.match(skill, /fresh challenge/);
+  assert.match(skill, /`resolve_catalog_bundle`/);
+  assert.match(skill, /`resolve_catalog_delta`/);
+  assert.match(operations, /\(page_id, updated_at, content_sha256\)/);
+  assert.match(operations, /must not read Catalog/i);
+  assert.match(operations, /never reuse runtime\s+facts/i);
 });
 
 test("MCP manifest points to existing scripts with sufficient timeout", () => {

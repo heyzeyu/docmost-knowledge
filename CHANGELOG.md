@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.0 - 2026-08-20
+
+- Added optional capability negotiation for `resolve_catalog_bundle` and
+  `resolve_catalog_delta` while preserving compatibility with v0.4 servers
+  that expose neither tool.
+- Added strict `catalog-bundle.v1`, `catalog-delta.v1`, and
+  `catalog-freshness-proof.v1` validation, including challenge echo, page
+  hashes, deterministic fingerprints, complete graph closure, and complete
+  Delta partitions.
+- Added bounded streaming response reads with a 16 MiB default and 32 MiB
+  hard maximum.
+- Classified both Catalog operations as retry-safe reads and reject malformed
+  inputs or tampered remote results at the local proxy boundary.
+- Documented per-diagnosis live revalidation, tuple-bound static caching, Delta
+  reconstruction, and the rule that remote Monkey never reads Catalog.
+
 ## 0.4.0 - 2026-08-05
 
 - Added strict contracts for `get_page_tree`, `preview_page_move`, `move_page`,

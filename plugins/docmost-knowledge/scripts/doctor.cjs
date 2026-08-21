@@ -21,15 +21,25 @@ async function main() {
   process.stdout.write(
     `Profile: ${config.profileName}\nEndpoint: ${config.remoteUrl}\nTools: ${report.toolCount}\n`,
   );
+  process.stdout.write(
+    `Docmost MCP v0.5 core contract: ${
+      report.coreCompatible ? "compatible" : "incompatible"
+    }\n`,
+  );
+  process.stdout.write(
+    report.catalog.compatible
+      ? "Catalog Bundle/Freshness: compatible\n"
+      : report.catalog.supported
+        ? "Catalog Bundle/Freshness: incompatible\n"
+        : "Catalog Bundle/Freshness: unsupported by this server (core tools remain usable)\n",
+  );
   if (!report.compatible) {
     const details = formatContractReport(report);
     if (!warnOnly) {
-      throw new Error(`Docmost MCP v0.4 contract check failed: ${details}`);
+      throw new Error(`Docmost MCP v0.5 contract check failed: ${details}`);
     }
     process.stdout.write(`Contract warnings: ${details}\n`);
-    return;
   }
-  process.stdout.write("Docmost MCP v0.4 contract: compatible\n");
 }
 
 main().catch((error) => {

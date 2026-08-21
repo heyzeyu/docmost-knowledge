@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const {
+  DEFAULT_MAX_RESPONSE_BYTES,
   ErrorCode,
   callRemote,
   createForward,
@@ -11,16 +12,114 @@ const {
   getConfig,
   handleLine,
   parseIntegerSetting,
+  readBoundedJsonResponse,
   readConfigFile,
   readTokenFromKeychain,
   resolveProfile,
   resolveToken,
 } = require("../scripts/docmost-keychain-proxy.cjs");
+const {
+  CATALOG_BUNDLE_SCHEMA_VERSION,
+  CATALOG_FRESHNESS_SCHEMA_VERSION,
+  QTS_FACT_CATALOG_CONTRACT,
+  computeBundleFingerprint,
+  sha256,
+} = require("../scripts/catalog-bundle-contract.cjs");
+
+const catalogPageId = "11111111-1111-4111-8111-111111111111";
+const catalogSpaceId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const catalogUpdatedAt = "2026-08-20T00:00:00.000Z";
 
 function missingConfigFile() {
   const error = new Error("missing");
   error.code = "ENOENT";
   throw error;
+}
+
+function createCatalogCall() {
+  const argumentsValue = {
+    contract: QTS_FACT_CATALOG_CONTRACT,
+    catalogRootPageId: catalogPageId,
+    environment: "prod",
+    roots: [{ pageId: catalogPageId }],
+    challenge: "diagnosis-unique-0001",
+  };
+  const markdown = [
+    "---",
+    "document_type: service_profile",
+    "schema_version: service-profile.v2",
+    "entity_id: service/example",
+    "---",
+    "# Example",
+  ].join("\n");
+  const page = {
+    page_id: catalogPageId,
+    title: "Example",
+    parent_page_id: null,
+    space_id: catalogSpaceId,
+    updated_at: catalogUpdatedAt,
+    content_sha256: sha256(markdown),
+    front_matter: {
+      document_type: "service_profile",
+      schema_version: "service-profile.v2",
+      entity_id: "service/example",
+    },
+    markdown,
+  };
+  const roots = [
+    {
+      selector: { page_id: catalogPageId },
+      status: "resolved",
+      page_id: catalogPageId,
+      document_type: "service_profile",
+      entity_id: "service/example",
+    },
+  ];
+  const manifest = [
+    {
+      page_id: catalogPageId,
+      updated_at: catalogUpdatedAt,
+      content_sha256: page.content_sha256,
+    },
+  ];
+  const fingerprint = computeBundleFingerprint({
+    catalogRootPageId: catalogPageId,
+    environment: argumentsValue.environment,
+    roots,
+    pages: manifest,
+    edges: [],
+    unresolvedReferences: [],
+  });
+  const result = {
+    content: [{ type: "text", text: `Catalog bundle ${fingerprint}` }],
+    structuredContent: {
+      schema_version: CATALOG_BUNDLE_SCHEMA_VERSION,
+      contract: QTS_FACT_CATALOG_CONTRACT,
+      catalog_root: {
+        page_id: catalogPageId,
+        title: "Catalog",
+        space_id: catalogSpaceId,
+        updated_at: catalogUpdatedAt,
+      },
+      environment: argumentsValue.environment,
+      roots,
+      pages: [page],
+      edges: [],
+      unresolved_references: [],
+      closure_complete: true,
+      bundle_fingerprint: fingerprint,
+      freshness_proof: {
+        schema_version: CATALOG_FRESHNESS_SCHEMA_VERSION,
+        challenge: argumentsValue.challenge,
+        verified_at: "2026-08-20T00:00:01.000Z",
+        isolation: "repeatable_read",
+        read_only: true,
+        page_manifest: manifest,
+        bundle_fingerprint: fingerprint,
+      },
+    },
+  };
+  return { argumentsValue, result };
 }
 
 test("getConfig accepts only credential-free HTTPS URLs", () => {
@@ -47,10 +146,7 @@ test("getConfig accepts only credential-free HTTPS URLs", () => {
       ),
     /credential-free/,
   );
-  assert.throws(
-    () => getConfig({}, missingConfigFile),
-    /DOCMOST_MCP_URL/,
-  );
+  assert.throws(() => getConfig({}, missingConfigFile), /DOCMOST_MCP_URL/);
   assert.throws(
     () =>
       getConfig(
@@ -80,6 +176,7 @@ test("getConfig reads non-secret settings from the config file", () => {
     requestTimeoutMs: 90_000,
     maxReadRetries: 1,
     retryDelayMs: 250,
+    maxResponseBytes: DEFAULT_MAX_RESPONSE_BYTES,
   });
 });
 
@@ -117,6 +214,7 @@ test("getConfig selects a profile and applies shared and environment settings", 
     requestTimeoutMs: 120_000,
     maxReadRetries: 2,
     retryDelayMs: 250,
+    maxResponseBytes: DEFAULT_MAX_RESPONSE_BYTES,
   });
 });
 
@@ -139,13 +237,11 @@ test("resolveProfile requires an explicit selection for multiple profiles", () =
 test("getConfig rejects bearer tokens stored in JSON", () => {
   assert.throws(
     () =>
-      getConfig(
-        { DOCMOST_CONFIG_FILE: "/tmp/docmost-config.json" },
-        () =>
-          JSON.stringify({
-            mcpUrl: "https://docs.example.com/mcp",
-            token: "must-not-be-stored-here",
-          }),
+      getConfig({ DOCMOST_CONFIG_FILE: "/tmp/docmost-config.json" }, () =>
+        JSON.stringify({
+          mcpUrl: "https://docs.example.com/mcp",
+          token: "must-not-be-stored-here",
+        }),
       ),
     /Do not store bearer tokens/,
   );
@@ -278,7 +374,7 @@ test("initialize is handled locally", async () => {
 
   assert.equal(result.protocolVersion, "2025-11-25");
   assert.equal(result.serverInfo.name, "docmost-knowledge");
-  assert.equal(result.serverInfo.version, "0.4.0");
+  assert.equal(result.serverInfo.version, "0.5.0");
   assert.deepEqual(result.capabilities, { tools: { listChanged: false } });
 });
 
@@ -333,6 +429,70 @@ test("tools/call rejects malformed arguments before forwarding", async () => {
   );
 });
 
+test("tools/call validates Catalog input and output around forwarding", async () => {
+  const { argumentsValue, result } = createCatalogCall();
+  const calls = [];
+  const accepted = await dispatchRequest(
+    {
+      jsonrpc: "2.0",
+      id: 4,
+      method: "tools/call",
+      params: {
+        name: "resolve_catalog_bundle",
+        arguments: argumentsValue,
+      },
+    },
+    async (...args) => {
+      calls.push(args);
+      return result;
+    },
+  );
+
+  assert.equal(accepted, result);
+  assert.deepEqual(calls, [
+    [
+      "tools/call",
+      { name: "resolve_catalog_bundle", arguments: argumentsValue },
+    ],
+  ]);
+
+  await assert.rejects(
+    dispatchRequest(
+      {
+        jsonrpc: "2.0",
+        id: 5,
+        method: "tools/call",
+        params: {
+          name: "resolve_catalog_bundle",
+          arguments: { ...argumentsValue, challenge: "short" },
+        },
+      },
+      () => assert.fail("invalid Catalog input must not be forwarded"),
+    ),
+    (error) => error.code === ErrorCode.InvalidParams,
+  );
+
+  const tampered = structuredClone(result);
+  tampered.structuredContent.pages[0].markdown += "\ntampered";
+  await assert.rejects(
+    dispatchRequest(
+      {
+        jsonrpc: "2.0",
+        id: 6,
+        method: "tools/call",
+        params: {
+          name: "resolve_catalog_bundle",
+          arguments: argumentsValue,
+        },
+      },
+      async () => tampered,
+    ),
+    (error) =>
+      error.code === ErrorCode.InternalError &&
+      /response validation failed/.test(error.message),
+  );
+});
+
 test("handleLine returns a JSON-RPC parse error", async () => {
   const response = await handleLine("not json", () => undefined);
   assert.equal(response.id, null);
@@ -362,10 +522,7 @@ test("callRemote sends a bearer token without exposing it in errors", async () =
     requests[0][1].headers.Authorization,
     "Bearer secret-token-value-for-tests",
   );
-  assert.equal(
-    requests[0][1].headers["MCP-Protocol-Version"],
-    "2025-06-18",
-  );
+  assert.equal(requests[0][1].headers["MCP-Protocol-Version"], "2025-06-18");
 
   await assert.rejects(
     callRemote(
@@ -384,6 +541,34 @@ test("callRemote sends a bearer token without exposing it in errors", async () =
     (error) =>
       error.message === "Docmost MCP authentication or authorization failed" &&
       !error.message.includes("secret-token-value-for-tests"),
+  );
+});
+
+test("readBoundedJsonResponse enforces declared and streamed limits", async () => {
+  await assert.rejects(
+    readBoundedJsonResponse(
+      new Response(JSON.stringify({ result: { tools: [] } }), {
+        headers: { "content-length": "2048" },
+      }),
+      1024,
+    ),
+    /exceeds the 1024-byte plugin limit/,
+  );
+
+  await assert.rejects(
+    readBoundedJsonResponse(
+      new Response(JSON.stringify({ value: "x".repeat(2048) })),
+      1024,
+    ),
+    /exceeds the 1024-byte plugin limit/,
+  );
+
+  assert.deepEqual(
+    await readBoundedJsonResponse(
+      new Response(JSON.stringify({ result: { ok: true } })),
+      1024,
+    ),
+    { result: { ok: true } },
   );
 });
 

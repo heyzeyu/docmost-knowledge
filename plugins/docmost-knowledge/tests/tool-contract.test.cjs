@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const {
+  CATALOG_TOOLS,
   CONFIRMATION_TOOLS,
   EXPECTED_UPDATED_AT_TOOLS,
   MUTATION_TOOLS,
@@ -14,6 +15,58 @@ const {
   formatContractReport,
   isRetrySafe,
 } = require("../scripts/tool-contract.cjs");
+
+function addCatalogCapabilities(catalog, names = CATALOG_TOOLS) {
+  for (const name of names) {
+    const required = [
+      "contract",
+      "catalogRootPageId",
+      "environment",
+      "roots",
+      "challenge",
+    ];
+    const properties = {
+      contract: { type: "string", const: "qts-fact-catalog.v1" },
+      catalogRootPageId: { type: "string", format: "uuid" },
+      environment: { type: "string" },
+      roots: { type: "array", minItems: 1, maxItems: 32 },
+      challenge: { type: "string", minLength: 16, maxLength: 128 },
+    };
+    if (name === "resolve_catalog_delta") {
+      required.push("previous");
+      properties.previous = {
+        type: "object",
+        properties: {
+          bundleFingerprint: { type: "string" },
+          pages: {
+            type: "array",
+            maxItems: 512,
+            items: {
+              type: "object",
+              properties: {
+                pageId: { type: "string", format: "uuid" },
+                updatedAt: { type: "string", format: "date-time" },
+                contentSha256: { type: "string" },
+              },
+              required: ["pageId", "updatedAt", "contentSha256"],
+            },
+          },
+        },
+        required: ["bundleFingerprint", "pages"],
+      };
+    }
+    catalog.push({
+      name,
+      inputSchema: {
+        type: "object",
+        properties,
+        required,
+        additionalProperties: false,
+      },
+    });
+  }
+  return catalog;
+}
 
 function createCompatibleCatalog() {
   return REQUIRED_TOOLS.map((name) => {
@@ -81,13 +134,55 @@ function createCompatibleCatalog() {
   });
 }
 
-test("analyzeToolCatalog accepts the full v0.4 server contract", () => {
+test("analyzeToolCatalog keeps the v0.4 core contract compatible", () => {
   const report = analyzeToolCatalog(createCompatibleCatalog());
 
   assert.equal(report.compatible, true);
+  assert.equal(report.coreCompatible, true);
   assert.equal(report.toolCount, REQUIRED_TOOLS.length);
   assert.deepEqual(report.missingTools, []);
   assert.deepEqual(report.issues, []);
+  assert.equal(report.catalog.supported, false);
+  assert.equal(report.catalog.compatible, false);
+  assert.deepEqual(report.catalog.missingTools, CATALOG_TOOLS);
+});
+
+test("analyzeToolCatalog accepts the complete optional Catalog capability", () => {
+  const catalog = addCatalogCapabilities(createCompatibleCatalog());
+  const report = analyzeToolCatalog(catalog);
+
+  assert.equal(report.compatible, true);
+  assert.equal(report.catalog.supported, true);
+  assert.equal(report.catalog.compatible, true);
+  assert.deepEqual(report.catalog.missingTools, []);
+  assert.deepEqual(report.catalog.issues, []);
+});
+
+test("analyzeToolCatalog rejects a partial Catalog capability", () => {
+  const catalog = addCatalogCapabilities(createCompatibleCatalog(), [
+    "resolve_catalog_bundle",
+  ]);
+  const report = analyzeToolCatalog(catalog);
+
+  assert.equal(report.compatible, false);
+  assert.equal(report.coreCompatible, true);
+  assert.equal(report.catalog.supported, true);
+  assert.equal(report.catalog.compatible, false);
+  assert.deepEqual(report.catalog.missingTools, ["resolve_catalog_delta"]);
+  assert.match(formatContractReport(report), /Catalog capability is partial/);
+});
+
+test("analyzeToolCatalog rejects incompatible Catalog schemas only", () => {
+  const catalog = addCatalogCapabilities(createCompatibleCatalog());
+  const bundle = catalog.find((tool) => tool.name === "resolve_catalog_bundle");
+  delete bundle.inputSchema.properties.challenge.maxLength;
+  const report = analyzeToolCatalog(catalog);
+
+  assert.equal(report.compatible, false);
+  assert.equal(report.coreCompatible, true);
+  assert.equal(report.catalog.supported, true);
+  assert.equal(report.catalog.compatible, false);
+  assert.match(formatContractReport(report), /challenge/);
 });
 
 test("analyzeToolCatalog identifies missing tools and hardened fields", () => {
@@ -116,12 +211,8 @@ test("analyzeToolCatalog identifies missing tools and hardened fields", () => {
     (tool) => tool.name === "archive_template",
   );
   archiveTemplate.inputSchema.required =
-    archiveTemplate.inputSchema.required.filter(
-      (field) => field !== "confirm",
-    );
-  const previewMove = catalog.find(
-    (tool) => tool.name === "preview_page_move",
-  );
+    archiveTemplate.inputSchema.required.filter((field) => field !== "confirm");
+  const previewMove = catalog.find((tool) => tool.name === "preview_page_move");
   previewMove.inputSchema.required = previewMove.inputSchema.required.filter(
     (field) => field !== "placement",
   );
@@ -132,6 +223,7 @@ test("analyzeToolCatalog identifies missing tools and hardened fields", () => {
   const summary = formatContractReport(report);
 
   assert.equal(report.compatible, false);
+  assert.equal(report.coreCompatible, false);
   assert.deepEqual(report.missingTools, ["delete_template"]);
   assert.match(summary, /update_page must require idempotencyKey/);
   assert.match(summary, /update_page must require expectedUpdatedAt/);
@@ -164,6 +256,9 @@ test("isRetrySafe retries only known read operations", () => {
     }),
     true,
   );
+  for (const name of CATALOG_TOOLS) {
+    assert.equal(isRetrySafe("tools/call", { name, arguments: {} }), true);
+  }
   for (const name of TEMPLATE_READ_TOOLS) {
     assert.equal(isRetrySafe("tools/call", { name, arguments: {} }), true);
   }

@@ -17,6 +17,36 @@ Search snippets are discovery evidence, not the authoritative page body.
 the page first and let the server enforce space, page, and subtree boundaries.
 Do not pass a title or slug where a UUID is required.
 
+## Catalog Bundle and freshness
+
+Catalog resolution is a diagnostic-orchestrator workflow, not a replacement
+for ordinary Docmost search. Use `resolve_catalog_bundle` for the first current
+closure and `resolve_catalog_delta` only when a prior static manifest is
+available.
+
+For every diagnosis:
+
+1. Generate a fresh 16-128 byte challenge and send the explicit Catalog root,
+   environment, and root selectors.
+2. Require a matching `catalog-freshness-proof.v1` challenge echo from a
+   read-only, repeatable-read snapshot.
+3. Verify every Markdown SHA-256, the complete page partition, graph edges,
+   unresolved references, closure status, and Bundle fingerprint. The local
+   proxy performs these checks and must reject any mismatch.
+4. Consume the current closure only after that live proof succeeds.
+
+A cache key is exactly `(page_id, updated_at, content_sha256)`. Cached Markdown
+may be reused only after the current Bundle or Delta proves that same tuple is
+still present. When Delta marks a page added or updated, use the returned full
+page. Remove deleted tuples and reconstruct the closure only if added,
+updated, removed, and unchanged form a complete partition. Never reuse runtime
+facts, prior incident conclusions, or a previous freshness proof across
+diagnoses.
+
+The local `qts-ops-toolkit` orchestrator may consume and validate the Bundle in
+a later integration. Remote Monkey runtime must not read Catalog or depend on
+Docmost availability.
+
 ## Create and update
 
 Before creating a page, search the selected space for the proposed title and

@@ -59,7 +59,7 @@ function finish(error) {
   const report = analyzeToolCatalog(listed.result.tools);
   if (!report.compatible && !warnOnly) {
     process.stderr.write(
-      `Docmost MCP v0.4 contract check failed: ${formatContractReport(report)}\n`,
+      `Docmost MCP v0.5 contract check failed: ${formatContractReport(report)}\n`,
     );
     process.exitCode = 1;
     return;
@@ -69,6 +69,13 @@ function finish(error) {
     `Docmost MCP live smoke passed: ${report.toolCount} tools available, profile contract ${
       report.compatible ? "compatible" : "has warnings"
     }.\n`,
+  );
+  process.stdout.write(
+    report.catalog.compatible
+      ? "Catalog Bundle/Freshness: compatible.\n"
+      : report.catalog.supported
+        ? "Catalog Bundle/Freshness: incompatible.\n"
+        : "Catalog Bundle/Freshness: unsupported by this server; core tools remain usable.\n",
   );
   if (!report.compatible) {
     process.stdout.write(`${formatContractReport(report)}\n`);

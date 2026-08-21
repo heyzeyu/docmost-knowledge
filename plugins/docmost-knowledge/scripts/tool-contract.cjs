@@ -1,5 +1,11 @@
 "use strict";
 
+const {
+  CATALOG_TOOLS,
+  MAX_PAGES: MAX_CATALOG_PAGES,
+  MAX_ROOTS: MAX_CATALOG_ROOTS,
+} = require("./catalog-bundle-contract.cjs");
+
 const TEMPLATE_READ_TOOLS = Object.freeze([
   "list_templates",
   "get_template",
@@ -15,7 +21,7 @@ const TEMPLATE_MUTATION_TOOLS = Object.freeze([
   "delete_template",
 ]);
 
-const REQUIRED_TOOLS = Object.freeze([
+const CORE_REQUIRED_TOOLS = Object.freeze([
   "list_spaces",
   "list_pages",
   "get_page",
@@ -50,6 +56,7 @@ const REQUIRED_TOOLS = Object.freeze([
   ...TEMPLATE_READ_TOOLS,
   ...TEMPLATE_MUTATION_TOOLS,
 ]);
+const REQUIRED_TOOLS = CORE_REQUIRED_TOOLS;
 
 const MUTATION_TOOLS = new Set([
   "restore_page_version",
@@ -117,9 +124,17 @@ function analyzeToolCatalog(tools) {
   if (!Array.isArray(tools)) {
     return {
       compatible: false,
+      coreCompatible: false,
       toolCount: 0,
-      missingTools: [...REQUIRED_TOOLS],
+      missingTools: [...CORE_REQUIRED_TOOLS],
       issues: ["tools/list did not return an array"],
+      coreIssues: ["tools/list did not return an array"],
+      catalog: {
+        supported: false,
+        compatible: false,
+        missingTools: [...CATALOG_TOOLS],
+        issues: ["tools/list did not return an array"],
+      },
     };
   }
 
@@ -128,85 +143,179 @@ function analyzeToolCatalog(tools) {
       .filter((tool) => isObject(tool) && typeof tool.name === "string")
       .map((tool) => [tool.name, tool]),
   );
-  const missingTools = REQUIRED_TOOLS.filter((name) => !byName.has(name));
-  const issues = [];
+  const missingTools = CORE_REQUIRED_TOOLS.filter((name) => !byName.has(name));
+  const coreIssues = [];
 
-  for (const name of REQUIRED_TOOLS) {
+  for (const name of CORE_REQUIRED_TOOLS) {
     const tool = byName.get(name);
     if (!tool) continue;
     if (!isObject(tool.inputSchema)) {
-      issues.push(`${name} has no inputSchema`);
+      coreIssues.push(`${name} has no inputSchema`);
     }
   }
 
   for (const name of MUTATION_TOOLS) {
     const tool = byName.get(name);
     if (tool && !requiresProperty(tool, "idempotencyKey")) {
-      issues.push(`${name} must require idempotencyKey`);
+      coreIssues.push(`${name} must require idempotencyKey`);
     }
   }
 
   for (const name of EXPECTED_UPDATED_AT_TOOLS) {
     const tool = byName.get(name);
     if (tool && !requiresProperty(tool, "expectedUpdatedAt")) {
-      issues.push(`${name} must require expectedUpdatedAt`);
+      coreIssues.push(`${name} must require expectedUpdatedAt`);
     }
   }
 
   for (const name of CONFIRMATION_TOOLS) {
     const tool = byName.get(name);
     if (tool && !requiresProperty(tool, "confirm")) {
-      issues.push(`${name} must require confirm`);
+      coreIssues.push(`${name} must require confirm`);
     }
   }
 
   for (const name of ["search_docs", "semantic_search_docs"]) {
     const tool = byName.get(name);
     if (tool && !hasProperty(tool, "rootPageId")) {
-      issues.push(`${name} must support rootPageId`);
+      coreIssues.push(`${name} must support rootPageId`);
     }
   }
 
   const pageTree = byName.get("get_page_tree");
   if (pageTree && !hasProperty(pageTree, "rootPageId")) {
-    issues.push("get_page_tree must support rootPageId");
+    coreIssues.push("get_page_tree must support rootPageId");
   }
 
   const previewMove = byName.get("preview_page_move");
   for (const field of ["pageId", "targetParentPageId", "placement"]) {
     if (previewMove && !requiresProperty(previewMove, field)) {
-      issues.push(`preview_page_move must require ${field}`);
+      coreIssues.push(`preview_page_move must require ${field}`);
     }
   }
   if (previewMove && !hasProperty(previewMove, "referencePageId")) {
-    issues.push("preview_page_move must support referencePageId");
+    coreIssues.push("preview_page_move must support referencePageId");
   }
 
   const movePage = byName.get("move_page");
   if (movePage && !requiresProperty(movePage, "movePlanToken")) {
-    issues.push("move_page must require movePlanToken");
+    coreIssues.push("move_page must require movePlanToken");
   }
 
   const movePages = byName.get("move_pages");
   const moveItem = getArrayItemSchema(movePages, "moves");
   if (movePages && !requiresProperty(movePages, "moves")) {
-    issues.push("move_pages must require moves");
+    coreIssues.push("move_pages must require moves");
   }
   if (movePages && !moveItem) {
-    issues.push("move_pages must define a moves item schema");
+    coreIssues.push("move_pages must define a moves item schema");
   } else if (moveItem) {
     for (const field of ["movePlanToken", "expectedUpdatedAt"]) {
       if (!requiresProperty({ inputSchema: moveItem }, field)) {
-        issues.push(`move_pages items must require ${field}`);
+        coreIssues.push(`move_pages items must require ${field}`);
       }
     }
   }
 
+  const presentCatalogTools = CATALOG_TOOLS.filter((name) => byName.has(name));
+  const missingCatalogTools = CATALOG_TOOLS.filter((name) => !byName.has(name));
+  const catalogIssues = [];
+  for (const name of presentCatalogTools) {
+    const tool = byName.get(name);
+    if (!isObject(tool?.inputSchema)) {
+      catalogIssues.push(`${name} has no inputSchema`);
+      continue;
+    }
+    for (const field of [
+      "contract",
+      "catalogRootPageId",
+      "environment",
+      "roots",
+      "challenge",
+    ]) {
+      if (!requiresProperty(tool, field)) {
+        catalogIssues.push(`${name} must require ${field}`);
+      }
+    }
+    const contract = getObjectProperty(tool, "contract");
+    if (contract?.const !== "qts-fact-catalog.v1") {
+      catalogIssues.push(`${name} must require contract qts-fact-catalog.v1`);
+    }
+    const catalogRootPageId = getObjectProperty(tool, "catalogRootPageId");
+    if (catalogRootPageId?.format !== "uuid") {
+      catalogIssues.push(`${name} catalogRootPageId must use uuid format`);
+    }
+    const roots = getObjectProperty(tool, "roots");
+    if (
+      roots?.type !== "array" ||
+      roots.minItems !== 1 ||
+      roots.maxItems !== MAX_CATALOG_ROOTS
+    ) {
+      catalogIssues.push(
+        `${name} roots must advertise 1-${MAX_CATALOG_ROOTS} items`,
+      );
+    }
+    const challenge = getObjectProperty(tool, "challenge");
+    if (challenge?.minLength !== 16 || challenge?.maxLength !== 128) {
+      catalogIssues.push(`${name} challenge must advertise 16-128 bytes`);
+    }
+  }
+  const deltaTool = byName.get("resolve_catalog_delta");
+  if (deltaTool && !requiresProperty(deltaTool, "previous")) {
+    catalogIssues.push("resolve_catalog_delta must require previous");
+  }
+  if (deltaTool) {
+    const previous = getObjectProperty(deltaTool, "previous");
+    const previousRequired = previous?.required;
+    const pages = isObject(previous?.properties?.pages)
+      ? previous.properties.pages
+      : null;
+    const pageItem = isObject(pages?.items) ? pages.items : null;
+    const pageRequired = pageItem?.required;
+    if (
+      !Array.isArray(previousRequired) ||
+      !previousRequired.includes("bundleFingerprint") ||
+      !previousRequired.includes("pages") ||
+      pages?.type !== "array" ||
+      pages.maxItems !== MAX_CATALOG_PAGES ||
+      !Array.isArray(pageRequired) ||
+      !["pageId", "updatedAt", "contentSha256"].every((field) =>
+        pageRequired.includes(field),
+      ) ||
+      pageItem?.properties?.pageId?.format !== "uuid" ||
+      pageItem?.properties?.updatedAt?.format !== "date-time"
+    ) {
+      catalogIssues.push(
+        "resolve_catalog_delta previous manifest schema is incompatible",
+      );
+    }
+  }
+  const catalogSupported = presentCatalogTools.length > 0;
+  const catalogCompatible =
+    presentCatalogTools.length === CATALOG_TOOLS.length &&
+    catalogIssues.length === 0;
+  const issues = [...coreIssues];
+  if (catalogSupported && missingCatalogTools.length > 0) {
+    issues.push(
+      `Catalog capability is partial; missing tools: ${missingCatalogTools.join(", ")}`,
+    );
+  }
+  if (catalogSupported) issues.push(...catalogIssues);
+  const coreCompatible = missingTools.length === 0 && coreIssues.length === 0;
+
   return {
-    compatible: missingTools.length === 0 && issues.length === 0,
+    compatible: coreCompatible && (!catalogSupported || catalogCompatible),
+    coreCompatible,
     toolCount: tools.length,
     missingTools,
     issues,
+    coreIssues,
+    catalog: {
+      supported: catalogSupported,
+      compatible: catalogCompatible,
+      missingTools: missingCatalogTools,
+      issues: catalogIssues,
+    },
   };
 }
 
@@ -225,13 +334,16 @@ function isRetrySafe(method, params) {
   const toolName = params?.name;
   return (
     typeof toolName === "string" &&
-    REQUIRED_TOOLS.includes(toolName) &&
+    (CORE_REQUIRED_TOOLS.includes(toolName) ||
+      CATALOG_TOOLS.includes(toolName)) &&
     !MUTATION_TOOLS.has(toolName)
   );
 }
 
 module.exports = {
   CONFIRMATION_TOOLS,
+  CORE_REQUIRED_TOOLS,
+  CATALOG_TOOLS,
   EXPECTED_UPDATED_AT_TOOLS,
   MUTATION_TOOLS,
   REQUIRED_TOOLS,

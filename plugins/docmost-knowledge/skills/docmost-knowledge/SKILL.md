@@ -1,6 +1,6 @@
 ---
 name: docmost-knowledge
-description: Use a private Docmost knowledge base through permission-scoped MCP tools. Trigger when the user asks to search, read, cite, capture, create, update, append, move, reorder, template, instantiate, version, restore, attach, index, or organize pages and directories in Docmost.
+description: Use a private Docmost knowledge base through permission-scoped MCP tools. Trigger when the user asks to search, read, cite, capture, create, update, append, move, reorder, template, instantiate, version, restore, attach, index, organize pages, or resolve a freshness-verified fact Catalog in Docmost.
 ---
 
 # Docmost Knowledge
@@ -35,6 +35,24 @@ scraping or direct database access.
    slug. Link only when the tool returned a trustworthy URL.
 7. Write only when the user asks to capture or change knowledge. Reuse an
    existing page when it represents the same subject.
+
+## Catalog workflow
+
+- Use `resolve_catalog_bundle` only when a diagnostic orchestrator needs a
+  structured `qts-fact-catalog.v1` reference closure. Ordinary knowledge search
+  continues to use `search_docs` or `semantic_search_docs`.
+- Start every diagnosis with a fresh challenge of 16-128 UTF-8 bytes. Never
+  carry a challenge or freshness proof into another diagnosis.
+- Use `resolve_catalog_bundle` when there is no revalidated local manifest. Use
+  `resolve_catalog_delta` with the previous fingerprint and page tuples only
+  to revalidate a static cache and reconstruct the current closure.
+- Reuse cached Markdown only when the current proof returns the exact same
+  `(page_id, updated_at, content_sha256)` tuple. Never reuse prior runtime
+  facts, incident conclusions, or unverified page content.
+- Treat missing Catalog tools as an unsupported optional capability, not as a
+  failure of ordinary Docmost work. Treat one missing tool, a challenge
+  mismatch, hash mismatch, incomplete Delta partition, or invalid fingerprint
+  as a hard Catalog validation failure.
 
 ## Write safety
 

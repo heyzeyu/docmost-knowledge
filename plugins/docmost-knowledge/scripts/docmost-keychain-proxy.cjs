@@ -7,6 +7,12 @@ const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline");
 const { isRetrySafe } = require("./tool-contract.cjs");
+const {
+  CATALOG_TOOLS,
+  CatalogValidationError,
+  validateCatalogToolInput,
+  validateCatalogToolResult,
+} = require("./catalog-bundle-contract.cjs");
 
 const DEFAULT_CONFIG_PATH = path.join(
   os.homedir(),
@@ -17,8 +23,10 @@ const DEFAULT_CONFIG_PATH = path.join(
 const DEFAULT_REQUEST_TIMEOUT_MS = 90_000;
 const DEFAULT_MAX_READ_RETRIES = 1;
 const DEFAULT_RETRY_DELAY_MS = 250;
+const DEFAULT_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const MAX_REQUEST_TIMEOUT_MS = 300_000;
-const SERVER_VERSION = "0.4.0";
+const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
+const SERVER_VERSION = "0.5.0";
 const PROXY_PROTOCOL_VERSION = "2025-11-25";
 const REMOTE_PROTOCOL_VERSION = "2025-06-18";
 const SUPPORTED_PROTOCOL_VERSIONS = new Set([
@@ -133,6 +141,13 @@ function getConfig(env = process.env, readFile = fs.readFileSync) {
       0,
       5_000,
     ),
+    maxResponseBytes: parseIntegerSetting(
+      env.DOCMOST_MAX_RESPONSE_BYTES ?? profile.maxResponseBytes,
+      "maxResponseBytes",
+      DEFAULT_MAX_RESPONSE_BYTES,
+      1_024,
+      MAX_RESPONSE_BYTES,
+    ),
   };
 }
 
@@ -202,11 +217,7 @@ function parseIntegerSetting(value, name, fallback, minimum, maximum) {
     return fallback;
   }
   const parsed = Number(value);
-  if (
-    !Number.isInteger(parsed) ||
-    parsed < minimum ||
-    parsed > maximum
-  ) {
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
     throw new Error(
       `${name} must be an integer between ${minimum} and ${maximum}`,
     );
@@ -322,8 +333,12 @@ async function callRemoteOnce(config, token, method, params, fetchImpl) {
 
   let payload;
   try {
-    payload = await response.json();
-  } catch {
+    payload = await readBoundedJsonResponse(
+      response,
+      config.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
+    );
+  } catch (error) {
+    if (error instanceof RpcError) throw error;
     if (!response.ok) {
       throw createHttpError(response);
     }
@@ -353,6 +368,76 @@ async function callRemoteOnce(config, token, method, params, fetchImpl) {
     );
   }
   return payload.result;
+}
+
+async function readBoundedJsonResponse(response, maxBytes) {
+  const contentLengthValue = response.headers?.get?.("content-length");
+  if (contentLengthValue !== null && contentLengthValue !== undefined) {
+    const contentLength = Number(contentLengthValue);
+    if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+      throw responseTooLargeError(maxBytes);
+    }
+  }
+
+  if (response.body && typeof response.body.getReader === "function") {
+    const reader = response.body.getReader();
+    const chunks = [];
+    let totalBytes = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = Buffer.from(value);
+        totalBytes += chunk.byteLength;
+        if (totalBytes > maxBytes) {
+          await reader.cancel().catch(() => undefined);
+          throw responseTooLargeError(maxBytes);
+        }
+        chunks.push(chunk);
+      }
+    } catch (error) {
+      if (error instanceof RpcError) throw error;
+      throw new RpcError(
+        ErrorCode.InternalError,
+        "Docmost MCP response stream failed",
+        { retryable: true },
+      );
+    }
+    return parseBoundedJson(Buffer.concat(chunks).toString("utf8"));
+  }
+
+  if (typeof response.text === "function") {
+    const source = await response.text();
+    if (Buffer.byteLength(source, "utf8") > maxBytes) {
+      throw responseTooLargeError(maxBytes);
+    }
+    return parseBoundedJson(source);
+  }
+
+  if (typeof response.json === "function") {
+    const value = await response.json();
+    if (Buffer.byteLength(JSON.stringify(value), "utf8") > maxBytes) {
+      throw responseTooLargeError(maxBytes);
+    }
+    return value;
+  }
+
+  throw new Error("Response body is unavailable");
+}
+
+function parseBoundedJson(source) {
+  try {
+    return JSON.parse(source);
+  } catch {
+    throw new Error("Response body is not valid JSON");
+  }
+}
+
+function responseTooLargeError(maxBytes) {
+  return new RpcError(
+    -32013,
+    `Docmost MCP response exceeds the ${maxBytes}-byte plugin limit`,
+  );
 }
 
 function createPayloadError(error, response, token) {
@@ -414,9 +499,7 @@ function defaultSleep(delayMs) {
 
 function formatStartupError(error) {
   const message =
-    error instanceof Error
-      ? error.message
-      : "Docmost MCP local startup failed";
+    error instanceof Error ? error.message : "Docmost MCP local startup failed";
   return sanitizeRemoteMessage(message);
 }
 
@@ -497,7 +580,38 @@ async function dispatchRequest(message, forward) {
       ) {
         throw new RpcError(ErrorCode.InvalidParams, "Invalid tool call");
       }
-      return forward("tools/call", message.params);
+      if (CATALOG_TOOLS.includes(message.params.name)) {
+        try {
+          validateCatalogToolInput(
+            message.params.name,
+            message.params.arguments,
+          );
+        } catch (error) {
+          if (error instanceof CatalogValidationError) {
+            throw new RpcError(ErrorCode.InvalidParams, error.message);
+          }
+          throw error;
+        }
+      }
+      const result = await forward("tools/call", message.params);
+      if (CATALOG_TOOLS.includes(message.params.name)) {
+        try {
+          validateCatalogToolResult(
+            message.params.name,
+            message.params.arguments,
+            result,
+          );
+        } catch (error) {
+          if (error instanceof CatalogValidationError) {
+            throw new RpcError(
+              ErrorCode.InternalError,
+              `Docmost Catalog response validation failed: ${error.message}`,
+            );
+          }
+          throw error;
+        }
+      }
+      return result;
     }
     default:
       throw new RpcError(
@@ -568,12 +682,15 @@ async function main() {
 
 if (require.main === module) {
   main().catch((error) => {
-    process.stderr.write(`Docmost MCP proxy failed: ${formatStartupError(error)}\n`);
+    process.stderr.write(
+      `Docmost MCP proxy failed: ${formatStartupError(error)}\n`,
+    );
     process.exitCode = 1;
   });
 } else {
   module.exports = {
     DEFAULT_CONFIG_PATH,
+    DEFAULT_MAX_RESPONSE_BYTES,
     ErrorCode,
     RpcError,
     callRemote,
@@ -584,6 +701,7 @@ if (require.main === module) {
     handleLine,
     parseIntegerSetting,
     readConfigFile,
+    readBoundedJsonResponse,
     readTokenFromKeychain,
     resolveProfile,
     resolveToken,
