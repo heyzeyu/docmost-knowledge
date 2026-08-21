@@ -3,6 +3,7 @@
   "requestTimeoutMs": 90000,
   "maxReadRetries": 1,
   "retryDelayMs": 250,
+  "catalogMaxResolutionWindowMs": 120000,
   "profiles": {
     "personal": {
       "mcpUrl": "https://docs.example.com/mcp",

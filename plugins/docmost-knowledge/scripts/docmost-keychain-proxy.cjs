@@ -20,6 +20,12 @@ const {
   validateCatalogV2ToolInput,
   validateCatalogV2ToolResult,
 } = require("./catalog-bundle-v2-contract.cjs");
+const {
+  CATALOG_V3_TOOLS,
+  CatalogV3ValidationError,
+  validateCatalogV3ToolInput,
+  validateCatalogV3ToolResult,
+} = require("./catalog-bundle-v3-contract.cjs");
 
 const DEFAULT_CONFIG_PATH = path.join(
   os.homedir(),
@@ -31,9 +37,10 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 90_000;
 const DEFAULT_MAX_READ_RETRIES = 1;
 const DEFAULT_RETRY_DELAY_MS = 250;
 const DEFAULT_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
+const DEFAULT_CATALOG_MAX_RESOLUTION_WINDOW_MS = 120_000;
 const MAX_REQUEST_TIMEOUT_MS = 300_000;
 const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
-const SERVER_VERSION = "0.6.0";
+const SERVER_VERSION = "0.7.0";
 const PROXY_PROTOCOL_VERSION = "2025-11-25";
 const REMOTE_PROTOCOL_VERSION = "2025-06-18";
 const SUPPORTED_PROTOCOL_VERSIONS = new Set([
@@ -157,6 +164,14 @@ function getConfig(env = process.env, readFile = fs.readFileSync) {
       DEFAULT_MAX_RESPONSE_BYTES,
       1_024,
       MAX_RESPONSE_BYTES,
+    ),
+    catalogMaxResolutionWindowMs: parseIntegerSetting(
+      env.DOCMOST_CATALOG_MAX_RESOLUTION_WINDOW_MS ??
+        profile.catalogMaxResolutionWindowMs,
+      "catalogMaxResolutionWindowMs",
+      DEFAULT_CATALOG_MAX_RESOLUTION_WINDOW_MS,
+      10_000,
+      300_000,
     ),
     ...(catalogPublicKeys ? { catalogPublicKeys } : {}),
   };
@@ -568,6 +583,8 @@ function createForward(
     const forward = (method, params) =>
       callRemoteFn(config, token, method, params);
     forward.catalogPublicKeys = config.catalogPublicKeys;
+    forward.catalogMaxResolutionWindowMs =
+      config.catalogMaxResolutionWindowMs;
     return {
       forward,
       startupError: null,
@@ -664,6 +681,23 @@ async function dispatchRequest(message, forward) {
           throw error;
         }
       }
+      if (CATALOG_V3_TOOLS.includes(message.params.name)) {
+        try {
+          validateCatalogV3ToolInput(
+            message.params.name,
+            message.params.arguments,
+            {
+              trustedPublicKeys: forward.catalogPublicKeys,
+              maxResolutionElapsedMs: forward.catalogMaxResolutionWindowMs,
+            },
+          );
+        } catch (error) {
+          if (error instanceof CatalogV3ValidationError) {
+            throw new RpcError(ErrorCode.InvalidParams, error.message);
+          }
+          throw error;
+        }
+      }
       const result = await forward("tools/call", message.params);
       if (CATALOG_TOOLS.includes(message.params.name)) {
         try {
@@ -695,6 +729,27 @@ async function dispatchRequest(message, forward) {
             throw new RpcError(
               ErrorCode.InternalError,
               `Docmost Catalog v2 response validation failed: ${error.message}`,
+            );
+          }
+          throw error;
+        }
+      }
+      if (CATALOG_V3_TOOLS.includes(message.params.name)) {
+        try {
+          validateCatalogV3ToolResult(
+            message.params.name,
+            message.params.arguments,
+            result,
+            {
+              trustedPublicKeys: forward.catalogPublicKeys,
+              maxResolutionElapsedMs: forward.catalogMaxResolutionWindowMs,
+            },
+          );
+        } catch (error) {
+          if (error instanceof CatalogV3ValidationError) {
+            throw new RpcError(
+              ErrorCode.InternalError,
+              `Docmost Catalog v3 response validation failed: ${error.message}`,
             );
           }
           throw error;

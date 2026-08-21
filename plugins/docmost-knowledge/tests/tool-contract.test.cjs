@@ -6,6 +6,7 @@ const test = require("node:test");
 const {
   CATALOG_TOOLS,
   CATALOG_V2_TOOLS,
+  CATALOG_V3_TOOLS,
   CONFIRMATION_TOOLS,
   EXPECTED_UPDATED_AT_TOOLS,
   MUTATION_TOOLS,
@@ -122,6 +123,89 @@ function addCatalogV2Capabilities(catalog, names = CATALOG_V2_TOOLS) {
   return catalog;
 }
 
+function addCatalogV3Capabilities(catalog, names = CATALOG_V3_TOOLS) {
+  const ticketProperties = Object.fromEntries(
+    [
+      "schema_version",
+      "signature_algorithm",
+      "public_key_format",
+      "public_key",
+      "key_id",
+      "ticket_id",
+      "issued_at",
+      "expires_at",
+      "challenge",
+      "catalog_root_page_id",
+      "environment",
+      "authorization_context_sha256",
+      "signature",
+    ].map((field) => [field, { type: "string" }]),
+  );
+  const ticket = {
+    type: "object",
+    properties: ticketProperties,
+    required: Object.keys(ticketProperties),
+    additionalProperties: false,
+  };
+  for (const name of names) {
+    const isBegin = name === "begin_catalog_resolution";
+    const required = isBegin
+      ? ["contract", "catalogRootPageId", "environment", "challenge"]
+      : ["contract", "catalogRootPageId", "environment", "roots", "ticket"];
+    const properties = {
+      contract: { type: "string", const: "qts-fact-catalog.v1" },
+      catalogRootPageId: { type: "string", format: "uuid" },
+      environment: { type: "string" },
+      ...(isBegin
+        ? { challenge: { type: "string", minLength: 16, maxLength: 128 } }
+        : {
+            roots: { type: "array", minItems: 1, maxItems: 32 },
+            ticket,
+          }),
+    };
+    if (name === "resolve_catalog_delta_v3") {
+      required.push("previous");
+      properties.previous = {
+        type: "object",
+        properties: {
+          bundleFingerprint: { type: "string" },
+          pages: {
+            type: "array",
+            maxItems: 512,
+            items: {
+              type: "object",
+              properties: {
+                pageId: { type: "string", format: "uuid" },
+                updatedAt: { type: "string", format: "date-time" },
+                contentSha256: { type: "string" },
+                frontMatterSha256: { type: "string" },
+              },
+              required: [
+                "pageId",
+                "updatedAt",
+                "contentSha256",
+                "frontMatterSha256",
+              ],
+            },
+          },
+          freshnessProof: { type: "object" },
+        },
+        required: ["bundleFingerprint", "pages", "freshnessProof"],
+      };
+    }
+    catalog.push({
+      name,
+      inputSchema: {
+        type: "object",
+        properties,
+        required,
+        additionalProperties: false,
+      },
+    });
+  }
+  return catalog;
+}
+
 function createCompatibleCatalog() {
   return REQUIRED_TOOLS.map((name) => {
     const properties = {};
@@ -202,6 +286,9 @@ test("analyzeToolCatalog keeps the v0.4 core contract compatible", () => {
   assert.equal(report.catalogV2.supported, false);
   assert.equal(report.catalogV2.compatible, false);
   assert.deepEqual(report.catalogV2.missingTools, CATALOG_V2_TOOLS);
+  assert.equal(report.catalogV3.supported, false);
+  assert.equal(report.catalogV3.compatible, false);
+  assert.deepEqual(report.catalogV3.missingTools, CATALOG_V3_TOOLS);
 });
 
 test("analyzeToolCatalog accepts the complete signed Catalog v2 capability", () => {
@@ -244,6 +331,41 @@ test("analyzeToolCatalog rejects partial or unsigned Catalog v2 schemas", () => 
     formatContractReport(unsigned),
     /previous signed state schema is incompatible/,
   );
+});
+
+test("analyzeToolCatalog accepts the complete ticketed Catalog v3 capability", () => {
+  const report = analyzeToolCatalog(
+    addCatalogV3Capabilities(createCompatibleCatalog()),
+  );
+  assert.equal(report.compatible, true);
+  assert.equal(report.catalogV3.supported, true);
+  assert.equal(report.catalogV3.compatible, true);
+  assert.deepEqual(report.catalogV3.missingTools, []);
+  assert.deepEqual(report.catalogV3.issues, []);
+});
+
+test("analyzeToolCatalog rejects partial or non-ticketed Catalog v3 schemas", () => {
+  const partial = analyzeToolCatalog(
+    addCatalogV3Capabilities(createCompatibleCatalog(), [
+      "begin_catalog_resolution",
+      "resolve_catalog_bundle_v3",
+    ]),
+  );
+  assert.equal(partial.compatible, false);
+  assert.deepEqual(partial.catalogV3.missingTools, [
+    "resolve_catalog_delta_v3",
+  ]);
+
+  const catalog = addCatalogV3Capabilities(createCompatibleCatalog());
+  const bundle = catalog.find(
+    (tool) => tool.name === "resolve_catalog_bundle_v3",
+  );
+  bundle.inputSchema.required = bundle.inputSchema.required.filter(
+    (field) => field !== "ticket",
+  );
+  const invalid = analyzeToolCatalog(catalog);
+  assert.equal(invalid.catalogV3.compatible, false);
+  assert.match(formatContractReport(invalid), /must require ticket/);
 });
 
 test("analyzeToolCatalog accepts the complete optional Catalog capability", () => {
@@ -359,6 +481,9 @@ test("isRetrySafe retries only known read operations", () => {
     assert.equal(isRetrySafe("tools/call", { name, arguments: {} }), true);
   }
   for (const name of CATALOG_V2_TOOLS) {
+    assert.equal(isRetrySafe("tools/call", { name, arguments: {} }), false);
+  }
+  for (const name of CATALOG_V3_TOOLS) {
     assert.equal(isRetrySafe("tools/call", { name, arguments: {} }), false);
   }
   for (const name of TEMPLATE_READ_TOOLS) {

@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.7.0 - 2026-08-21
+
+- Added `begin_catalog_resolution`, `resolve_catalog_bundle_v3`, and
+  `resolve_catalog_delta_v3` contract validation without changing published v2
+  schemas.
+- Added pinned, signed, expiring one-use start tickets and strict proof binding
+  for challenge, authorization context, complete current roots, one snapshot,
+  page manifest, extractor version, and Bundle fingerprint.
+- Added strict fenced-YAML parsing with canonical deep equality against response
+  front matter and `front_matter_sha256` binding in manifests and fingerprints.
+- Re-extract and reconcile every reference locally, reject missing, extra,
+  duplicate, or identity-inconsistent edges, and re-derive roots, KRC candidates,
+  closure status, and completeness.
+- Added roots-expanding Delta v3 with exact `root_changes` and complete,
+  mutually exclusive page partitions while preserving v2 same-roots behavior.
+- Require `catalogPublicKeys` for all signed v2/v3 calls and report `pinCount`
+  plus non-sensitive key IDs in doctor; ordinary Docmost tools remain usable
+  without pins.
+- Added configurable signed-resolution time limits, snapshot-window checks,
+  current/next Ed25519 rotation, synthetic/tamper/partial-closure/KRC/hash/roots
+  fixtures, and an isolated installed-directory full-suite test.
+- Bundled the YAML parser and license so installed plugin caches do not depend
+  on repository parents or external `node_modules` layout.
+
 ## 0.6.0 - 2026-08-21
 
 - Added separately negotiated `resolve_catalog_bundle_v2` and

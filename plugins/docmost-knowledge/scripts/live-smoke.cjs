@@ -59,7 +59,7 @@ function finish(error) {
   const report = analyzeToolCatalog(listed.result.tools);
   if (!report.compatible && !warnOnly) {
     process.stderr.write(
-      `Docmost MCP v0.6 contract check failed: ${formatContractReport(report)}\n`,
+      `Docmost MCP 0.7.0 contract check failed: ${formatContractReport(report)}\n`,
     );
     process.exitCode = 1;
     return;
@@ -69,6 +69,13 @@ function finish(error) {
     `Docmost MCP live smoke passed: ${report.toolCount} tools available, profile contract ${
       report.compatible ? "compatible" : "has warnings"
     }.\n`,
+  );
+  process.stdout.write(
+    report.catalogV3.compatible
+      ? "Catalog v3 ticketed Bundle/Delta: compatible.\n"
+      : report.catalogV3.supported
+        ? "Catalog v3 ticketed Bundle/Delta: incompatible.\n"
+        : "Catalog v3 ticketed Bundle/Delta: unsupported by this server; core tools remain usable.\n",
   );
   process.stdout.write(
     report.catalog.compatible

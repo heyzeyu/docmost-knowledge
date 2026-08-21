@@ -10,21 +10,29 @@ const {
 } = require("./catalog-content-validator.cjs");
 
 const QTS_FACT_CATALOG_CONTRACT = "qts-fact-catalog.v1";
-const CATALOG_BUNDLE_V2_SCHEMA_VERSION = "catalog-bundle.v2";
-const CATALOG_DELTA_V2_SCHEMA_VERSION = "catalog-delta.v2";
-const CATALOG_FRESHNESS_V2_SCHEMA_VERSION = "catalog-freshness-proof.v2";
-const CATALOG_REFERENCE_EXTRACTOR_VERSION = "qts-fact-catalog-extractor.v2.0.0";
+const CATALOG_RESOLUTION_TICKET_SCHEMA_VERSION =
+  "catalog-resolution-ticket.v1";
+const CATALOG_BUNDLE_V3_SCHEMA_VERSION = "catalog-bundle.v3";
+const CATALOG_DELTA_V3_SCHEMA_VERSION = "catalog-delta.v3";
+const CATALOG_FRESHNESS_V3_SCHEMA_VERSION = "catalog-freshness-proof.v3";
+const CATALOG_REFERENCE_EXTRACTOR_VERSION = "qts-fact-catalog-extractor.v3.0.0";
 const CATALOG_SIGNATURE_ALGORITHM = "ed25519";
 const CATALOG_PUBLIC_KEY_FORMAT = "spki-der-base64url";
-const CATALOG_V2_TOOLS = Object.freeze([
-  "resolve_catalog_bundle_v2",
-  "resolve_catalog_delta_v2",
+const BEGIN_CATALOG_RESOLUTION_TOOL = "begin_catalog_resolution";
+const CATALOG_V3_TOOLS = Object.freeze([
+  BEGIN_CATALOG_RESOLUTION_TOOL,
+  "resolve_catalog_bundle_v3",
+  "resolve_catalog_delta_v3",
 ]);
 const MAX_ROOTS = 32;
 const MAX_PAGES = 512;
 const MAX_EDGES = 4_096;
 const MAX_PAGE_MARKDOWN_BYTES = 1024 * 1024;
-const MAX_RESOLUTION_ELAPSED_MS = 10_000;
+const DEFAULT_MAX_RESOLUTION_ELAPSED_MS = 120_000;
+const MAX_ALLOWED_RESOLUTION_ELAPSED_MS = 300_000;
+const MAX_TICKET_LIFETIME_MS = 600_000;
+const ELAPSED_TIMESTAMP_TOLERANCE_MS = 1_000;
+const FUTURE_CLOCK_SKEW_MS = 5_000;
 const MIN_CHALLENGE_BYTES = 16;
 const MAX_CHALLENGE_BYTES = 128;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
@@ -57,30 +65,51 @@ const SUPPORTED_SCHEMAS = new Map([
   ["known_root_cause", new Set(["known-root-cause.v1"])],
 ]);
 
-class CatalogV2ValidationError extends Error {
+class CatalogV3ValidationError extends Error {
   constructor(message) {
     super(message);
-    this.name = "CatalogV2ValidationError";
+    this.name = "CatalogV3ValidationError";
   }
 }
 
-function validateCatalogV2ToolInput(name, args, options = {}) {
-  if (!CATALOG_V2_TOOLS.includes(name)) return;
+function validateCatalogV3ToolInput(name, args, options = {}) {
+  if (!CATALOG_V3_TOOLS.includes(name)) return;
   requireTrustedPublicKeys(options.trustedPublicKeys);
+  assertObject(args, "Catalog v3 arguments");
+  if (name === BEGIN_CATALOG_RESOLUTION_TOOL) {
+    assertExactKeys(
+      args,
+      ["contract", "catalogRootPageId", "environment", "challenge"],
+      "Catalog resolution start arguments",
+    );
+    validateBaseInput(args);
+    assertChallenge(args.challenge);
+    return;
+  }
   assertExactKeys(
     args,
-    name === "resolve_catalog_delta_v2"
+    name === "resolve_catalog_delta_v3"
       ? [
           "contract",
           "catalogRootPageId",
           "environment",
           "roots",
-          "challenge",
+          "ticket",
           "previous",
         ]
-      : ["contract", "catalogRootPageId", "environment", "roots", "challenge"],
-    "Catalog v2 arguments",
+      : ["contract", "catalogRootPageId", "environment", "roots", "ticket"],
+    "Catalog v3 arguments",
   );
+  validateBaseInput(args);
+  validateResolutionTicket(args, args.ticket, options, { requireUnexpired: true });
+  validateInputRoots(args.roots);
+
+  if (name === "resolve_catalog_delta_v3") {
+    validatePrevious(args, options);
+  }
+}
+
+function validateBaseInput(args) {
   if (args.contract !== QTS_FACT_CATALOG_CONTRACT) {
     fail(`contract must be ${QTS_FACT_CATALOG_CONTRACT}`);
   }
@@ -91,41 +120,43 @@ function validateCatalogV2ToolInput(name, args, options = {}) {
   ) {
     fail("environment is invalid");
   }
-  assertChallenge(args.challenge);
+}
+
+function validateInputRoots(roots) {
   if (
-    !Array.isArray(args.roots) ||
-    args.roots.length === 0 ||
-    args.roots.length > MAX_ROOTS
+    !Array.isArray(roots) ||
+    roots.length === 0 ||
+    roots.length > MAX_ROOTS
   ) {
     fail(`roots must contain 1-${MAX_ROOTS} selectors`);
   }
-  args.roots.forEach(validateInputRootSelector);
-  const canonicalRoots = canonicalRequestedRoots(args.roots);
-  if (canonicalRoots.length !== args.roots.length) {
+  roots.forEach(validateInputRootSelector);
+  const canonical = canonicalRequestedRoots(roots);
+  if (canonical.length !== roots.length) {
     fail("Catalog requested roots contain duplicates");
   }
-  assertCanonicalOrder(canonicalRoots, "Catalog requested roots");
-
-  if (name === "resolve_catalog_delta_v2") {
-    validatePrevious(args, options);
-  }
+  assertCanonicalOrder(canonical, "Catalog requested roots");
 }
 
-function validateCatalogV2ToolResult(name, args, result, options = {}) {
-  if (!CATALOG_V2_TOOLS.includes(name)) return result;
-  validateCatalogV2ToolInput(name, args, options);
-  assertObject(result, "Catalog v2 tool result");
+function validateCatalogV3ToolResult(name, args, result, options = {}) {
+  if (!CATALOG_V3_TOOLS.includes(name)) return result;
+  validateCatalogV3ToolInput(name, args, options);
+  assertObject(result, "Catalog v3 tool result");
   validateSummaryContent(result);
-  assertObject(result.structuredContent, "Catalog v2 structuredContent");
-  if (name === "resolve_catalog_bundle_v2") {
-    validateBundleV2(args, result.structuredContent, options);
+  assertObject(result.structuredContent, "Catalog v3 structuredContent");
+  if (name === BEGIN_CATALOG_RESOLUTION_TOOL) {
+    validateResolutionTicket(args, result.structuredContent, options, {
+      requireUnexpired: true,
+    });
+  } else if (name === "resolve_catalog_bundle_v3") {
+    validateBundleV3(args, result.structuredContent, options);
   } else {
-    validateDeltaV2(args, result.structuredContent, options);
+    validateDeltaV3(args, result.structuredContent, options);
   }
   return result;
 }
 
-function validateBundleV2(args, bundle, options = {}) {
+function validateBundleV3(args, bundle, options = {}) {
   assertExactKeys(
     bundle,
     [
@@ -144,15 +175,15 @@ function validateBundleV2(args, bundle, options = {}) {
       "bundle_fingerprint",
       "freshness_proof",
     ],
-    "Catalog bundle v2",
+    "Catalog bundle v3",
   );
-  if (bundle.schema_version !== CATALOG_BUNDLE_V2_SCHEMA_VERSION) {
-    fail("Catalog bundle v2 schema_version is unsupported");
+  if (bundle.schema_version !== CATALOG_BUNDLE_V3_SCHEMA_VERSION) {
+    fail("Catalog bundle v3 schema_version is unsupported");
   }
   validateCommonEnvelope(args, bundle);
   validateExtractorVersion(bundle.reference_extractor_version);
   if (!Array.isArray(bundle.pages) || bundle.pages.length > MAX_PAGES) {
-    fail(`Catalog bundle v2 pages must contain at most ${MAX_PAGES} items`);
+    fail(`Catalog bundle v3 pages must contain at most ${MAX_PAGES} items`);
   }
   const pages = bundle.pages.map(validateFullPage);
   assertUnique(
@@ -198,12 +229,12 @@ function validateBundleV2(args, bundle, options = {}) {
       unresolvedReferences: unresolved,
       closureStatus,
       closureComplete: bundle.closure_complete,
-      requireFrontMatterHash: false,
-      legacyReverseRelation: true,
+      requireFrontMatterHash: true,
+      legacyReverseRelation: false,
     },
     fail,
   );
-  const expectedFingerprint = computeBundleV2Fingerprint({
+  const expectedFingerprint = computeBundleV3Fingerprint({
     catalogRootPageId: bundle.catalog_root.page_id,
     environment: bundle.environment,
     roots,
@@ -214,9 +245,9 @@ function validateBundleV2(args, bundle, options = {}) {
     closureStatus,
   });
   if (bundle.bundle_fingerprint !== expectedFingerprint) {
-    fail("Catalog bundle v2 fingerprint does not match its content");
+    fail("Catalog bundle v3 fingerprint does not match its content");
   }
-  const proof = validateFreshnessProofV2(
+  const proof = validateFreshnessProofV3(
     args,
     bundle.freshness_proof,
     manifest,
@@ -228,7 +259,7 @@ function validateBundleV2(args, bundle, options = {}) {
   return bundle;
 }
 
-function validateDeltaV2(args, delta, options = {}) {
+function validateDeltaV3(args, delta, options = {}) {
   assertExactKeys(
     delta,
     [
@@ -240,6 +271,7 @@ function validateDeltaV2(args, delta, options = {}) {
       "catalog_root",
       "environment",
       "roots",
+      "root_changes",
       "known_root_cause_candidates",
       "current_page_manifest",
       "edges",
@@ -250,19 +282,24 @@ function validateDeltaV2(args, delta, options = {}) {
       "changes",
       "freshness_proof",
     ],
-    "Catalog delta v2",
+    "Catalog delta v3",
   );
-  if (delta.schema_version !== CATALOG_DELTA_V2_SCHEMA_VERSION) {
-    fail("Catalog delta v2 schema_version is unsupported");
+  if (delta.schema_version !== CATALOG_DELTA_V3_SCHEMA_VERSION) {
+    fail("Catalog delta v3 schema_version is unsupported");
   }
   validateCommonEnvelope(args, delta);
   validateExtractorVersion(delta.reference_extractor_version);
   if (delta.previous_bundle_fingerprint !== args.previous.bundleFingerprint) {
-    fail("Catalog delta v2 previous fingerprint does not match the request");
+    fail("Catalog delta v3 previous fingerprint does not match the request");
   }
   const manifest = validateManifest(delta.current_page_manifest);
   const pageIds = new Set(manifest.map((page) => page.page_id));
   const roots = validateRoots(delta.roots, pageIds);
+  validateRootChanges(
+    delta.root_changes,
+    args.previous.freshnessProof.requested_roots,
+    canonicalRequestedRoots(args.roots),
+  );
   const resolvedRootEntities = new Set(
     roots
       .filter((root) => root.status === "resolved")
@@ -286,7 +323,7 @@ function validateDeltaV2(args, delta, options = {}) {
     roots,
     unresolved,
   );
-  const expectedFingerprint = computeBundleV2Fingerprint({
+  const expectedFingerprint = computeBundleV3Fingerprint({
     catalogRootPageId: delta.catalog_root.page_id,
     environment: delta.environment,
     roots,
@@ -297,9 +334,9 @@ function validateDeltaV2(args, delta, options = {}) {
     closureStatus,
   });
   if (delta.bundle_fingerprint !== expectedFingerprint) {
-    fail("Catalog delta v2 fingerprint does not match its current manifest");
+    fail("Catalog delta v3 fingerprint does not match its current manifest");
   }
-  const proof = validateFreshnessProofV2(
+  const proof = validateFreshnessProofV3(
     args,
     delta.freshness_proof,
     manifest,
@@ -326,8 +363,8 @@ function validateDeltaV2(args, delta, options = {}) {
       unresolvedReferences: unresolved,
       closureStatus,
       closureComplete: delta.closure_complete,
-      requireFrontMatterHash: false,
-      legacyReverseRelation: true,
+      requireFrontMatterHash: true,
+      legacyReverseRelation: false,
     },
     fail,
   );
@@ -338,9 +375,10 @@ function validateDeltaV2(args, delta, options = {}) {
     delta.changes.removed.length > 0;
   const expectedChanged =
     args.previous.bundleFingerprint !== delta.bundle_fingerprint ||
-    hasPageChanges;
+    hasPageChanges ||
+    delta.root_changes.added.length > 0;
   if (delta.changed !== expectedChanged) {
-    fail("Catalog delta v2 changed flag is inconsistent");
+    fail("Catalog delta v3 changed flag is inconsistent");
   }
   return delta;
 }
@@ -361,16 +399,18 @@ function validatePrevious(args, options) {
   const manifest = args.previous.pages.map((page) => {
     assertExactKeys(
       page,
-      ["pageId", "updatedAt", "contentSha256"],
+      ["pageId", "updatedAt", "contentSha256", "frontMatterSha256"],
       "previous page",
     );
     assertUuid(page.pageId, "previous.pageId");
     assertIsoTimestamp(page.updatedAt, "previous.updatedAt");
     assertSha256(page.contentSha256, "previous.contentSha256");
+    assertSha256(page.frontMatterSha256, "previous.frontMatterSha256");
     return {
       page_id: page.pageId,
       updated_at: page.updatedAt,
       content_sha256: page.contentSha256,
+      front_matter_sha256: page.frontMatterSha256,
     };
   });
   assertUnique(
@@ -378,7 +418,7 @@ function validatePrevious(args, options) {
     "previous page IDs",
   );
   assertPageIdOrder(manifest, (page) => page.page_id, "previous pages");
-  const proof = validateFreshnessProofV2(
+  const proof = validateFreshnessProofV3(
     args,
     args.previous.freshnessProof,
     manifest,
@@ -386,7 +426,7 @@ function validatePrevious(args, options) {
     options,
     { previous: true },
   );
-  if (proof.challenge === args.challenge) {
+  if (proof.challenge === args.ticket.challenge) {
     fail("Delta challenge must differ from the previous proof challenge");
   }
 }
@@ -461,6 +501,58 @@ function validateRoots(values, pageIds, pagesById) {
   assertCanonicalOrder(values, "Catalog roots");
   assertUnique(values.map(stableStringify), "Catalog roots");
   return values;
+}
+
+function validateRootChanges(value, previousRoots, currentRoots) {
+  assertExactKeys(
+    value,
+    ["added", "removed", "unchanged"],
+    "Catalog root_changes",
+  );
+  for (const name of ["added", "removed", "unchanged"]) {
+    const roots = value[name];
+    if (!Array.isArray(roots) || roots.length > MAX_ROOTS) {
+      fail(`Catalog root_changes.${name} is invalid`);
+    }
+    roots.forEach(validateOutputRootSelector);
+    assertCanonicalOrder(roots, `Catalog root_changes.${name}`);
+    assertUnique(
+      roots.map(stableStringify),
+      `Catalog root_changes.${name}`,
+    );
+  }
+
+  const previousByKey = new Map(
+    previousRoots.map((root) => [stableStringify(root), root]),
+  );
+  const currentByKey = new Map(
+    currentRoots.map((root) => [stableStringify(root), root]),
+  );
+  const expectedRemoved = sortCanonical(
+    [...previousByKey]
+      .filter(([key]) => !currentByKey.has(key))
+      .map(([, root]) => root),
+  );
+  if (expectedRemoved.length > 0) {
+    fail("Catalog delta v3 previous roots are not a subset of current roots");
+  }
+  const expected = {
+    added: sortCanonical(
+      [...currentByKey]
+        .filter(([key]) => !previousByKey.has(key))
+        .map(([, root]) => root),
+    ),
+    removed: [],
+    unchanged: sortCanonical(
+      [...currentByKey]
+        .filter(([key]) => previousByKey.has(key))
+        .map(([, root]) => root),
+    ),
+  };
+  if (stableStringify(value) !== stableStringify(expected)) {
+    fail("Catalog root_changes does not match previous and current roots");
+  }
+  return value;
 }
 
 function validateCandidates(
@@ -547,6 +639,7 @@ function validateFullPage(page) {
       "space_id",
       "updated_at",
       "content_sha256",
+      "front_matter_sha256",
       "fetched_at",
       "front_matter",
       "markdown",
@@ -562,6 +655,7 @@ function validateFullPage(page) {
   assertIsoTimestamp(page.updated_at, "Catalog updated_at");
   assertIsoTimestamp(page.fetched_at, "Catalog fetched_at");
   assertSha256(page.content_sha256, "Catalog content_sha256");
+  assertSha256(page.front_matter_sha256, "Catalog front_matter_sha256");
   if (
     typeof page.markdown !== "string" ||
     Buffer.byteLength(page.markdown, "utf8") > MAX_PAGE_MARKDOWN_BYTES
@@ -704,7 +798,75 @@ function validateClosure(status, complete, roots, unresolved) {
   return status;
 }
 
-function validateFreshnessProofV2(
+function validateResolutionTicket(args, ticket, options = {}, mode = {}) {
+  assertExactKeys(
+    ticket,
+    [
+      "schema_version",
+      "signature_algorithm",
+      "public_key_format",
+      "public_key",
+      "key_id",
+      "ticket_id",
+      "issued_at",
+      "expires_at",
+      "challenge",
+      "catalog_root_page_id",
+      "environment",
+      "authorization_context_sha256",
+      "signature",
+    ],
+    "Catalog resolution ticket",
+  );
+  if (ticket.schema_version !== CATALOG_RESOLUTION_TICKET_SCHEMA_VERSION) {
+    fail("Catalog resolution ticket schema is unsupported");
+  }
+  validateSignedEnvelope(ticket, "Catalog resolution ticket");
+  assertUuid(ticket.ticket_id, "Catalog resolution ticket_id");
+  assertIsoTimestamp(ticket.issued_at, "Catalog ticket issued_at");
+  assertIsoTimestamp(ticket.expires_at, "Catalog ticket expires_at");
+  assertChallenge(ticket.challenge);
+  assertUuid(ticket.catalog_root_page_id, "Catalog ticket root page ID");
+  assertSha256(
+    ticket.authorization_context_sha256,
+    "Catalog ticket authorization context",
+  );
+  const issuedAt = Date.parse(ticket.issued_at);
+  const expiresAt = Date.parse(ticket.expires_at);
+  if (
+    expiresAt <= issuedAt ||
+    expiresAt - issuedAt > MAX_TICKET_LIFETIME_MS
+  ) {
+    fail("Catalog resolution ticket expiry is outside the trusted window");
+  }
+  const now = Date.now();
+  if (issuedAt > now + FUTURE_CLOCK_SKEW_MS) {
+    fail("Catalog resolution ticket is from the future");
+  }
+  if (mode.requireUnexpired && expiresAt <= now) {
+    fail("Catalog resolution ticket has expired");
+  }
+  if (ticket.catalog_root_page_id !== args.catalogRootPageId) {
+    fail("Catalog resolution ticket root does not match the request");
+  }
+  if (ticket.environment !== args.environment) {
+    fail("Catalog resolution ticket environment does not match the request");
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(args, "challenge") &&
+    ticket.challenge !== args.challenge
+  ) {
+    fail("Catalog resolution ticket challenge does not match the request");
+  }
+  verifySignedValue(
+    ticket,
+    options.trustedPublicKeys,
+    "Catalog resolution ticket",
+  );
+  return ticket;
+}
+
+function validateFreshnessProofV3(
   args,
   proof,
   manifest,
@@ -720,10 +882,12 @@ function validateFreshnessProofV2(
       "public_key_format",
       "public_key",
       "key_id",
+      "resolution_ticket_id",
       "challenge",
       "resolution_started_at",
       "verified_at",
       "resolution_elapsed_ms",
+      "snapshot_fetched_at",
       "catalog_root_page_id",
       "environment",
       "authorization_context_sha256",
@@ -735,46 +899,48 @@ function validateFreshnessProofV2(
       "bundle_fingerprint",
       "signature",
     ],
-    "Catalog freshness proof v2",
+    "Catalog freshness proof v3",
   );
-  if (proof.schema_version !== CATALOG_FRESHNESS_V2_SCHEMA_VERSION) {
-    fail("Catalog freshness proof v2 schema is unsupported");
+  if (proof.schema_version !== CATALOG_FRESHNESS_V3_SCHEMA_VERSION) {
+    fail("Catalog freshness proof v3 schema is unsupported");
   }
-  if (proof.signature_algorithm !== CATALOG_SIGNATURE_ALGORITHM) {
-    fail("Catalog freshness signature algorithm is unsupported");
-  }
-  if (proof.public_key_format !== CATALOG_PUBLIC_KEY_FORMAT) {
-    fail("Catalog freshness public key format is unsupported");
-  }
-  if (typeof proof.key_id !== "string" || !KEY_ID_PATTERN.test(proof.key_id)) {
-    fail("Catalog freshness key_id is invalid");
-  }
+  validateSignedEnvelope(proof, "Catalog freshness proof");
+  assertUuid(proof.resolution_ticket_id, "Catalog proof resolution_ticket_id");
   assertChallenge(proof.challenge);
-  if (!mode.previous && proof.challenge !== args.challenge) {
-    fail("Catalog freshness challenge does not match the request");
-  }
   assertIsoTimestamp(
     proof.resolution_started_at,
     "Catalog resolution_started_at",
   );
   assertIsoTimestamp(proof.verified_at, "Catalog verified_at");
-  if (Date.parse(proof.verified_at) < Date.parse(proof.resolution_started_at)) {
+  assertIsoTimestamp(proof.snapshot_fetched_at, "Catalog snapshot_fetched_at");
+  const resolutionStartedAt = Date.parse(proof.resolution_started_at);
+  const verifiedAt = Date.parse(proof.verified_at);
+  const snapshotFetchedAt = Date.parse(proof.snapshot_fetched_at);
+  if (verifiedAt < resolutionStartedAt) {
     fail("Catalog freshness timestamps are reversed");
   }
-  const timestampElapsed =
-    Date.parse(proof.verified_at) - Date.parse(proof.resolution_started_at);
-  if (Math.abs(timestampElapsed - proof.resolution_elapsed_ms) > 1_000) {
+  const timestampElapsed = verifiedAt - resolutionStartedAt;
+  if (
+    Math.abs(timestampElapsed - proof.resolution_elapsed_ms) >
+    ELAPSED_TIMESTAMP_TOLERANCE_MS
+  ) {
     fail("Catalog resolution_elapsed_ms contradicts signed timestamps");
   }
-  if (Date.parse(proof.verified_at) > Date.now() + 5_000) {
+  if (verifiedAt > Date.now() + FUTURE_CLOCK_SKEW_MS) {
     fail("Catalog freshness proof is from the future");
   }
   if (
     !Number.isSafeInteger(proof.resolution_elapsed_ms) ||
     proof.resolution_elapsed_ms < 0 ||
-    proof.resolution_elapsed_ms > MAX_RESOLUTION_ELAPSED_MS
+    proof.resolution_elapsed_ms > getMaxResolutionElapsedMs(options)
   ) {
     fail("Catalog resolution_elapsed_ms is invalid");
+  }
+  if (
+    snapshotFetchedAt < resolutionStartedAt ||
+    snapshotFetchedAt > verifiedAt
+  ) {
+    fail("Catalog snapshot_fetched_at is outside the signed resolution window");
   }
   assertUuid(proof.catalog_root_page_id, "Catalog proof root page ID");
   if (proof.catalog_root_page_id !== args.catalogRootPageId) {
@@ -787,11 +953,42 @@ function validateFreshnessProofV2(
     proof.authorization_context_sha256,
     "Catalog authorization context",
   );
-  if (
-    stableStringify(proof.requested_roots) !==
-    stableStringify(canonicalRequestedRoots(args.roots))
-  ) {
-    fail("Catalog proof requested roots do not match the request");
+  validateProofRoots(proof.requested_roots);
+  const currentRoots = canonicalRequestedRoots(args.roots);
+  if (mode.previous) {
+    const currentRootKeys = new Set(currentRoots.map(stableStringify));
+    if (
+      proof.requested_roots.some(
+        (root) => !currentRootKeys.has(stableStringify(root)),
+      )
+    ) {
+      fail("Previous Catalog proof roots are not a subset of current roots");
+    }
+    if (
+      proof.authorization_context_sha256 !==
+      args.ticket.authorization_context_sha256
+    ) {
+      fail("Previous Catalog proof authorization context is stale");
+    }
+  } else {
+    const ticket = validateResolutionTicket(args, args.ticket, options);
+    if (
+      proof.resolution_ticket_id !== ticket.ticket_id ||
+      proof.challenge !== ticket.challenge ||
+      proof.resolution_started_at !== ticket.issued_at ||
+      proof.authorization_context_sha256 !==
+        ticket.authorization_context_sha256
+    ) {
+      fail("Catalog freshness proof does not match its resolution ticket");
+    }
+    if (verifiedAt > Date.parse(ticket.expires_at)) {
+      fail("Catalog freshness proof completed after its ticket expired");
+    }
+    if (
+      stableStringify(proof.requested_roots) !== stableStringify(currentRoots)
+    ) {
+      fail("Catalog proof requested roots do not match the request");
+    }
   }
   if (proof.isolation !== "repeatable_read" || proof.read_only !== true) {
     fail("Catalog proof does not attest a read-only repeatable-read snapshot");
@@ -804,25 +1001,46 @@ function validateFreshnessProofV2(
   if (stableStringify(proofManifest) !== stableStringify(manifest)) {
     fail("Catalog proof manifest does not match the response");
   }
-  verifyFreshnessSignature(proof, options.trustedPublicKeys);
+  verifySignedValue(proof, options.trustedPublicKeys, "Catalog freshness proof");
   return proof;
 }
 
-function verifyFreshnessSignature(proof, trustedPublicKeys) {
-  assertCanonicalBase64Url(proof.public_key, "Catalog public key");
-  assertCanonicalBase64Url(proof.signature, "Catalog signature");
-  requireTrustedPublicKeys(trustedPublicKeys);
-  const pinned = trustedPublicKeys[proof.key_id];
-  if (typeof pinned !== "string") {
-    fail(`Catalog signing key_id is not pinned: ${proof.key_id}`);
+function validateProofRoots(roots) {
+  if (!Array.isArray(roots) || roots.length === 0 || roots.length > MAX_ROOTS) {
+    fail(`Catalog proof roots must contain 1-${MAX_ROOTS} items`);
   }
-  if (pinned !== proof.public_key) {
-    fail(`Catalog public_key does not match pinned key_id: ${proof.key_id}`);
+  roots.forEach(validateOutputRootSelector);
+  assertCanonicalOrder(roots, "Catalog proof requested roots");
+  assertUnique(roots.map(stableStringify), "Catalog proof requested roots");
+}
+
+function validateSignedEnvelope(value, name) {
+  if (value.signature_algorithm !== CATALOG_SIGNATURE_ALGORITHM) {
+    fail(`${name} signature algorithm is unsupported`);
+  }
+  if (value.public_key_format !== CATALOG_PUBLIC_KEY_FORMAT) {
+    fail(`${name} public key format is unsupported`);
+  }
+  if (typeof value.key_id !== "string" || !KEY_ID_PATTERN.test(value.key_id)) {
+    fail(`${name} key_id is invalid`);
+  }
+}
+
+function verifySignedValue(value, trustedPublicKeys, name) {
+  assertCanonicalBase64Url(value.public_key, `${name} public key`);
+  assertCanonicalBase64Url(value.signature, `${name} signature`);
+  requireTrustedPublicKeys(trustedPublicKeys);
+  const pinned = trustedPublicKeys[value.key_id];
+  if (typeof pinned !== "string") {
+    fail(`Catalog signing key_id is not pinned: ${value.key_id}`);
+  }
+  if (pinned !== value.public_key) {
+    fail(`Catalog public_key does not match pinned key_id: ${value.key_id}`);
   }
   let publicKey;
   try {
     publicKey = createPublicKey({
-      key: Buffer.from(proof.public_key, "base64url"),
+      key: Buffer.from(value.public_key, "base64url"),
       format: "der",
       type: "spki",
     });
@@ -832,7 +1050,7 @@ function verifyFreshnessSignature(proof, trustedPublicKeys) {
   if (publicKey.asymmetricKeyType !== "ed25519") {
     fail("Catalog public key is not Ed25519");
   }
-  const { signature, ...unsigned } = proof;
+  const { signature, ...unsigned } = value;
   let valid = false;
   try {
     valid = verifySignature(
@@ -844,7 +1062,20 @@ function verifyFreshnessSignature(proof, trustedPublicKeys) {
   } catch {
     valid = false;
   }
-  if (!valid) fail("Catalog freshness proof signature is invalid");
+  if (!valid) fail(`${name} signature is invalid`);
+}
+
+function getMaxResolutionElapsedMs(options) {
+  const value = options.maxResolutionElapsedMs;
+  if (value === undefined) return DEFAULT_MAX_RESOLUTION_ELAPSED_MS;
+  if (
+    !Number.isSafeInteger(value) ||
+    value < 10_000 ||
+    value > MAX_ALLOWED_RESOLUTION_ELAPSED_MS
+  ) {
+    fail("Catalog max resolution window is invalid");
+  }
+  return value;
 }
 
 function requireTrustedPublicKeys(trustedPublicKeys) {
@@ -885,7 +1116,12 @@ function reconstructDeltaPages(changes, cache = VERIFIED_PAGE_CACHE) {
 }
 
 function verifiedPageCacheKey(page) {
-  return [page.page_id, page.updated_at, page.content_sha256].join("\0");
+  return [
+    page.page_id,
+    page.updated_at,
+    page.content_sha256,
+    page.front_matter_sha256,
+  ].join("\0");
 }
 
 function validateDeltaChanges(previousPages, currentManifest, changes) {
@@ -903,6 +1139,7 @@ function validateDeltaChanges(previousPages, currentManifest, changes) {
     page_id: page.pageId,
     updated_at: page.updatedAt,
     content_sha256: page.contentSha256,
+    front_matter_sha256: page.frontMatterSha256,
   }));
   const previousById = new Map(previous.map((page) => [page.page_id, page]));
   const currentById = new Map(
@@ -944,7 +1181,8 @@ function validateDeltaChanges(previousPages, currentManifest, changes) {
     }
     if (
       previousValue.updated_at === currentValue.updated_at &&
-      previousValue.content_sha256 === currentValue.content_sha256
+      previousValue.content_sha256 === currentValue.content_sha256 &&
+      previousValue.front_matter_sha256 === currentValue.front_matter_sha256
     ) {
       fail("Catalog delta updated item did not change");
     }
@@ -1000,11 +1238,11 @@ function validateDeltaChanges(previousPages, currentManifest, changes) {
   return fetchedPages;
 }
 
-function computeBundleV2Fingerprint(input) {
+function computeBundleV3Fingerprint(input) {
   return sha256(
     stableStringify({
       contract: QTS_FACT_CATALOG_CONTRACT,
-      schema_version: CATALOG_BUNDLE_V2_SCHEMA_VERSION,
+      schema_version: CATALOG_BUNDLE_V3_SCHEMA_VERSION,
       catalog_root_page_id: input.catalogRootPageId,
       environment: input.environment,
       roots: sortCanonical(input.roots),
@@ -1026,6 +1264,7 @@ function pageManifest(pages) {
       page_id: page.page_id,
       updated_at: page.updated_at,
       content_sha256: page.content_sha256,
+      front_matter_sha256: page.front_matter_sha256,
     }))
     .sort((left, right) => compare(left.page_id, right.page_id));
 }
@@ -1046,10 +1285,15 @@ function validateManifest(values) {
 }
 
 function validateManifestItem(item, name) {
-  assertExactKeys(item, ["page_id", "updated_at", "content_sha256"], name);
+  assertExactKeys(
+    item,
+    ["page_id", "updated_at", "content_sha256", "front_matter_sha256"],
+    name,
+  );
   assertUuid(item.page_id, `${name}.page_id`);
   assertIsoTimestamp(item.updated_at, `${name}.updated_at`);
   assertSha256(item.content_sha256, `${name}.content_sha256`);
+  assertSha256(item.front_matter_sha256, `${name}.front_matter_sha256`);
   return item;
 }
 
@@ -1057,7 +1301,8 @@ function assertManifestMatchesPage(manifest, page) {
   if (
     !manifest ||
     manifest.updated_at !== page.updated_at ||
-    manifest.content_sha256 !== page.content_sha256
+    manifest.content_sha256 !== page.content_sha256 ||
+    manifest.front_matter_sha256 !== page.front_matter_sha256
   ) {
     fail("Catalog delta full page does not match the current manifest");
   }
@@ -1065,12 +1310,8 @@ function assertManifestMatchesPage(manifest, page) {
 
 function validateFetchedAt(pages, proof) {
   for (const page of pages) {
-    const fetched = Date.parse(page.fetched_at);
-    if (
-      fetched < Date.parse(proof.resolution_started_at) - 5_000 ||
-      fetched > Date.parse(proof.verified_at) + 5_000
-    ) {
-      fail("Catalog page fetched_at is outside the signed resolution window");
+    if (page.fetched_at !== proof.snapshot_fetched_at) {
+      fail("Catalog page fetched_at does not match the signed snapshot");
     }
   }
   if (
@@ -1301,23 +1542,26 @@ function compare(left, right) {
 }
 
 function fail(message) {
-  throw new CatalogV2ValidationError(message);
+  throw new CatalogV3ValidationError(message);
 }
 
 module.exports = {
-  CATALOG_BUNDLE_V2_SCHEMA_VERSION,
-  CATALOG_DELTA_V2_SCHEMA_VERSION,
-  CATALOG_FRESHNESS_V2_SCHEMA_VERSION,
+  BEGIN_CATALOG_RESOLUTION_TOOL,
+  CATALOG_RESOLUTION_TICKET_SCHEMA_VERSION,
+  CATALOG_BUNDLE_V3_SCHEMA_VERSION,
+  CATALOG_DELTA_V3_SCHEMA_VERSION,
+  CATALOG_FRESHNESS_V3_SCHEMA_VERSION,
   CATALOG_REFERENCE_EXTRACTOR_VERSION,
-  CATALOG_V2_TOOLS,
-  CatalogV2ValidationError,
-  computeBundleV2Fingerprint,
+  CATALOG_V3_TOOLS,
+  CatalogV3ValidationError,
+  computeBundleV3Fingerprint,
   pageManifest,
   sha256,
   stableStringify,
-  validateBundleV2,
-  validateCatalogV2ToolInput,
-  validateCatalogV2ToolResult,
-  validateDeltaV2,
-  validateFreshnessProofV2,
+  validateBundleV3,
+  validateCatalogV3ToolInput,
+  validateCatalogV3ToolResult,
+  validateDeltaV3,
+  validateFreshnessProofV3,
+  validateResolutionTicket,
 };

@@ -1,6 +1,6 @@
 {
   "name": "docmost-knowledge",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Search, maintain, organize, cite, and resolve freshness-verified Catalog bundles in private Docmost knowledge bases through Keychain-authenticated MCP connections.",
   "author": {
     "name": "wzyonline-1999",
@@ -20,7 +20,7 @@
   "interface": {
     "displayName": "Docmost Knowledge",
     "shortDescription": "Use a private Docmost knowledge base safely from Codex.",
-    "longDescription": "Docmost Knowledge gives Codex permission-aware directory-scoped search, atomic page-tree organization, page editing, AI-oriented template, version history, attachment, vector-index, and optional signed Catalog Bundle and Delta workflows across personal or company profiles. A local stdio proxy reads bearer tokens from macOS Keychain, validates Catalog v2 proofs and graph closure, bounds remote responses, and forwards requests only over HTTPS without storing credentials in the plugin.",
+    "longDescription": "Docmost Knowledge gives Codex permission-aware directory-scoped search, atomic page-tree organization, page editing, AI-oriented template, version history, attachment, vector-index, and optional signed Catalog Bundle and Delta workflows across personal or company profiles. A local stdio proxy reads bearer tokens from macOS Keychain, validates pinned Catalog v2 proofs and ticket-bound v3 graph closure, bounds remote responses, and forwards requests only over HTTPS without storing credentials in the plugin.",
     "developerName": "wzyonline-1999",
     "category": "Productivity",
     "capabilities": ["Interactive", "Read", "Write"],

@@ -20,37 +20,41 @@ Do not pass a title or slug where a UUID is required.
 ## Catalog Bundle and freshness
 
 Catalog resolution is a diagnostic-orchestrator workflow, not a replacement
-for ordinary Docmost search. Prefer `resolve_catalog_bundle_v2` for the first
-current closure and `resolve_catalog_delta_v2` only when a prior signed proof
-and static manifest are available. The unsuffixed tools are immutable v1
-compatibility endpoints and are not a silent fallback for signed-freshness
-workflows.
+for ordinary Docmost search. Prefer the v3 start, Bundle, and Delta tools. The
+v2 pair is signed compatibility, and the unsuffixed tools are immutable v1
+compatibility endpoints. Neither is a silent fallback for ticket-bound v3.
 
 For every diagnosis:
 
-1. Generate a fresh 16-128 byte challenge and send the explicit Catalog root,
-   environment, and root selectors.
-2. Require a matching signed `catalog-freshness-proof.v2` from a read-only,
-   repeatable-read snapshot. The proof must bind the authorization context,
-   requested roots, page manifest, extractor version, and Bundle fingerprint.
-3. Verify every Markdown SHA-256, the complete page partition, resolved-root
-   candidate applicability, graph edges, unresolved references, closure status,
-   Bundle fingerprint, and Ed25519 signature. The local proxy performs these
-   checks and must reject any mismatch. When a profile configures public-key
-   pins, the proof key ID and public key must match one of those pins.
-4. Consume the current closure only after that live proof succeeds.
+1. Generate a fresh 16-128 byte challenge and call
+   `begin_catalog_resolution` with the explicit Catalog root and environment.
+   Do not provide `started_at`. The returned ticket time proves only when the
+   connector received the call, not when the user sent a message.
+2. Use the signed, unexpired ticket once with `resolve_catalog_bundle_v3`, or
+   use it with `resolve_catalog_delta_v3`, a prior signed v3 proof, and its exact
+   manifest. Delta may preserve or expand roots, never shrink them.
+3. Require a matching `catalog-freshness-proof.v3` from one read-only,
+   repeatable-read snapshot. It must bind the ticket, challenge, current
+   authorization context, complete new roots, snapshot timestamp, page
+   manifest, extractor version, and Bundle fingerprint.
+4. Verify every Markdown and front-matter SHA-256, strict fenced-YAML equality,
+   complete page and root-change partitions, resolved-root candidate
+   applicability, graph edges, unresolved references, locally derived closure
+   flags, Bundle fingerprint, ticket signature, and proof signature. The profile
+   must pin the response key ID and public key.
+5. Consume the current closure only after that live proof succeeds.
 
-The local proxy deliberately does not replay v2 Catalog requests. When a
-transport failure leaves the outcome uncertain, use a fresh challenge for the
-next Bundle or Delta call.
+The local proxy deliberately does not replay v2 or v3 Catalog requests. When a
+transport failure leaves the outcome uncertain, discard both challenge and
+ticket and begin again.
 
-A cache key is exactly `(page_id, updated_at, content_sha256)`. Cached Markdown
-may be reused only after the current Bundle or Delta proves that same tuple is
-still present. When Delta marks a page added or updated, use the returned full
-page. Remove deleted tuples and reconstruct the closure only if added,
-updated, removed, and unchanged form a complete partition. Never reuse runtime
-facts, prior incident conclusions, or a previous freshness proof across
-diagnoses.
+A v2 cache key is exactly `(page_id, updated_at, content_sha256)`; v3 also binds
+`front_matter_sha256`. Cached Markdown may be reused only after the current
+Bundle or Delta proves the same tuple. When Delta marks a page added or updated,
+use the returned full page. Remove deleted tuples and reconstruct the closure
+only if added, updated, removed, and unchanged form a complete partition. Never
+reuse runtime facts, prior incident conclusions, tickets, challenges, or a
+previous freshness proof across diagnoses.
 
 The local `qts-ops-toolkit` orchestrator may consume and validate the Bundle in
 a later integration. Remote Monkey runtime must not read Catalog or depend on

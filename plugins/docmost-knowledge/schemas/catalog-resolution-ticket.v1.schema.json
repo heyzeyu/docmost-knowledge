@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "catalog-resolution-ticket.v1.schema.json",
+  "title": "Catalog Resolution Ticket v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "signature_algorithm",
+    "public_key_format",
+    "public_key",
+    "key_id",
+    "ticket_id",
+    "issued_at",
+    "expires_at",
+    "challenge",
+    "catalog_root_page_id",
+    "environment",
+    "authorization_context_sha256",
+    "signature"
+  ],
+  "properties": {
+    "schema_version": { "const": "catalog-resolution-ticket.v1" },
+    "signature_algorithm": { "const": "ed25519" },
+    "public_key_format": { "const": "spki-der-base64url" },
+    "public_key": { "type": "string", "minLength": 32, "maxLength": 256 },
+    "key_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "ticket_id": { "type": "string", "format": "uuid" },
+    "issued_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": "string", "format": "date-time" },
+    "challenge": { "type": "string", "minLength": 16, "maxLength": 128 },
+    "catalog_root_page_id": { "type": "string", "format": "uuid" },
+    "environment": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "authorization_context_sha256": { "$ref": "#/$defs/sha256" },
+    "signature": { "type": "string", "minLength": 64, "maxLength": 256 }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}

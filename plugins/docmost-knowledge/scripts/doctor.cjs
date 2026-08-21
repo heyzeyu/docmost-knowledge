@@ -17,12 +17,14 @@ async function main() {
   const token = resolveToken(config);
   const result = await callRemote(config, token, "tools/list", {});
   const report = analyzeToolCatalog(result.tools);
+  const keyIds = Object.keys(config.catalogPublicKeys ?? {}).sort();
+  const pinCount = keyIds.length;
 
   process.stdout.write(
     `Profile: ${config.profileName}\nEndpoint: ${config.remoteUrl}\nTools: ${report.toolCount}\n`,
   );
   process.stdout.write(
-    `Docmost MCP v0.6 core contract: ${
+    `Docmost MCP 0.7.0 core contract: ${
       report.coreCompatible ? "compatible" : "incompatible"
     }\n`,
   );
@@ -40,12 +42,30 @@ async function main() {
         ? "Catalog v2 signed Bundle/Delta: incompatible\n"
         : "Catalog v2 signed Bundle/Delta: unsupported by this server (core tools remain usable)\n",
   );
-  if (!report.compatible) {
+  process.stdout.write(
+    report.catalogV3.compatible
+      ? "Catalog v3 ticketed Bundle/Delta: compatible\n"
+      : report.catalogV3.supported
+        ? "Catalog v3 ticketed Bundle/Delta: incompatible\n"
+        : "Catalog v3 ticketed Bundle/Delta: unsupported by this server (core tools remain usable)\n",
+  );
+  process.stdout.write(
+    `Catalog signing pins: pinCount=${pinCount}; keyIds=${
+      keyIds.length > 0 ? keyIds.join(",") : "none"
+    }\n`,
+  );
+  const pinsRequired = report.catalogV2.supported || report.catalogV3.supported;
+  if (!report.compatible || (pinsRequired && pinCount === 0)) {
     const details = formatContractReport(report);
+    const pinIssue =
+      pinsRequired && pinCount === 0
+        ? "Catalog v2/v3 requires profile catalogPublicKeys pins"
+        : "";
+    const combined = [details, pinIssue].filter(Boolean).join("; ");
     if (!warnOnly) {
-      throw new Error(`Docmost MCP v0.6 contract check failed: ${details}`);
+      throw new Error(`Docmost MCP 0.7.0 contract check failed: ${combined}`);
     }
-    process.stdout.write(`Contract warnings: ${details}\n`);
+    process.stdout.write(`Contract warnings: ${combined}\n`);
   }
 }
 

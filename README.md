@@ -28,10 +28,11 @@ Keychain or an environment variable, then forwards MCP requests over HTTPS.
 - Vector-index workflows exposed by the compatible server
 - Personal and company profiles with isolated endpoints and Keychain entries
 - Safe retry of known read-only tools that do not consume one-use challenges
-- Optional signed Catalog Bundle v2 and trusted Delta consumption for
-  diagnostic orchestrators, with immutable v1 compatibility
-- Ed25519 proof verification with optional per-profile public-key pinning
-- A strict v0.6 core and optional-extension contract doctor and live smoke test
+- Optional signed Catalog v2 compatibility plus ticket-bound Catalog v3 Bundle
+  and expandable-roots Delta workflows for diagnostic orchestrators
+- Mandatory profile-level Ed25519 public-key pinning for every v2/v3 Catalog
+  call, with current/next key rotation support
+- A strict 0.7.0 core and optional-extension contract doctor and live smoke test
 - Bounded remote response streaming with a 16 MiB default limit
 - Local credential handling without storing secrets in the repository
 
@@ -88,6 +89,7 @@ keeps personal and company credentials separate:
   "requestTimeoutMs": 90000,
   "maxReadRetries": 1,
   "maxResponseBytes": 16777216,
+  "catalogMaxResolutionWindowMs": 120000,
   "profiles": {
     "personal": {
       "mcpUrl": "https://docs.example.com/mcp",
@@ -139,7 +141,8 @@ variables:
 | `DOCMOST_MAX_READ_RETRIES`    | Transient retries for known read tools, from 0 to 3                                                    |
 | `DOCMOST_RETRY_DELAY_MS`      | Base read-retry delay, from 0 to 5,000 ms                                                              |
 | `DOCMOST_MAX_RESPONSE_BYTES`  | Maximum remote JSON response, from 1 KiB to 32 MiB                                                     |
-| `DOCMOST_CATALOG_PUBLIC_KEYS` | Optional JSON object mapping trusted Catalog `key_id` values to Ed25519 SPKI DER base64url public keys |
+| `DOCMOST_CATALOG_PUBLIC_KEYS` | JSON object mapping trusted Catalog `key_id` values to Ed25519 SPKI DER base64url public keys; required for v2/v3 calls |
+| `DOCMOST_CATALOG_MAX_RESOLUTION_WINDOW_MS` | Maximum accepted signed v3 resolution window, from 10,000 to 300,000 ms |
 
 One plugin process selects one profile. To expose two profiles to Codex at the
 same time, define two intentionally named MCP server entries that run this
@@ -172,28 +175,41 @@ use the `qts-fact-catalog.v1` request selector contract while returning
 `catalog-freshness-proof.v2`. Each exposed version must advertise its complete
 pair. A partial or malformed pair fails the contract check.
 
+The preferred v3 workflow advertises all three tools together:
+`begin_catalog_resolution`, `resolve_catalog_bundle_v3`, and
+`resolve_catalog_delta_v3`. The start call returns a signed, expiring, one-use
+ticket. Bundle and Delta bind that ticket, its fresh challenge, the current
+authorization-context hash, the complete requested roots, a single snapshot
+timestamp, the front-matter-bound page manifest, and the current Bundle
+fingerprint. Delta v3 accepts equal roots or a strict roots expansion and
+returns `root_changes`; it never accepts roots removal or silently falls back
+to v1/v2.
+
 For v2, the proxy validates exact fields and canonical ordering, Markdown
 SHA-256 values, roots, known-root-cause candidates, graph closure, deterministic
 fingerprints, Ed25519 signatures, and complete Delta reconstruction before
 returning a result. The signed proof binds the challenge, snapshot window,
 requested roots, authorization context, page manifest, extractor version, and
-bundle fingerprint. HTTPS authenticates the endpoint; deployments that also
-want explicit signing-key identity can configure `catalogPublicKeys` per
-profile or `DOCMOST_CATALOG_PUBLIC_KEYS`. A configured pin is mandatory for
-that profile and supports multiple key IDs during rotation.
+bundle fingerprint. HTTPS authenticates the endpoint, while
+`catalogPublicKeys` or `DOCMOST_CATALOG_PUBLIC_KEYS` supplies the separate
+trust anchor for signed Catalog data. v2/v3 calls fail closed without at least
+one pin. Configure both current and next non-secret key IDs during a rotation
+window. Ordinary search, read, and write tools remain available when Catalog
+pins are absent.
 
 Every new diagnosis must send a fresh challenge and receive a new live
 freshness proof. A caller may retain static page content only under its exact
-`(page_id, updated_at, content_sha256)` tuple and may reuse that content only
-after the current Bundle or Delta revalidates the same tuple. Runtime facts and
+`(page_id, updated_at, content_sha256)` tuple, plus
+`front_matter_sha256` for v3, and may reuse that content only after the current
+Bundle or Delta revalidates the same tuple. Runtime facts and
 prior diagnostic conclusions must never be reused across diagnoses. Remote
 Monkey execution does not read Catalog; only the local diagnostic orchestrator
 consumes these tools.
 
-The proxy never automatically retries either v2 Catalog tool because the
-server consumes its challenge before reading the Catalog. If transport outcome
-is ambiguous, discard that challenge and begin a new Bundle or Delta call with
-a fresh one.
+The proxy never automatically retries v2 or v3 Catalog calls. A v2 call
+consumes its challenge, and the v3 start consumes a challenge before issuing a
+one-use ticket. If transport outcome is ambiguous, discard that challenge and
+ticket and begin again.
 
 The local proxy handles `initialize` and `ping`, rejects redirects, validates
 remote responses, applies a configurable 90-second default timeout, preserves
@@ -230,9 +246,11 @@ only after the server advertises both optional tools. Increase
 
 Upgrading from v0.5 to v0.6 preserves the core and immutable Catalog v1
 contracts. Signed fenced-YAML Catalog workflows use the separate v2 tool pair.
-Public-key pinning is optional and disabled by default, so existing profiles
-need no configuration change. To pin a server, add a non-secret map to one
-profile:
+Version 0.7.0 keeps the published v2 schemas unchanged but requires a non-secret
+key pin before the connector will invoke v2 or v3. It also adds the ticketed v3
+contract, strict fenced-YAML/front-matter equality, full local graph extraction,
+front-matter hashes, and expandable-roots Delta. Add the server's independently
+confirmed public key map to each Catalog-enabled profile:
 
 ```json
 {
@@ -241,6 +259,12 @@ profile:
   }
 }
 ```
+
+Profiles without this map continue to use ordinary Docmost tools, but v2/v3
+Catalog calls fail closed. A connector ticket proves when the connector
+received `begin_catalog_resolution`; it does not prove the time of the user's
+message. This release does not accept caller-supplied `started_at`. A future
+trusted-host start token would require a separate versioned contract.
 
 ## Development
 
@@ -252,7 +276,8 @@ npm test
 ```
 
 Validate local configuration, Keychain access, the remote tool catalog, and the
-strict v0.6 core contract and both optional Catalog capability versions:
+strict 0.7.0 core contract and all optional Catalog capability versions. Doctor
+also prints `pinCount` and the non-sensitive pinned key IDs:
 
 ```bash
 npm run doctor

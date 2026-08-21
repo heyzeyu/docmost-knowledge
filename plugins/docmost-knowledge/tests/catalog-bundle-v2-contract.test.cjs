@@ -446,7 +446,13 @@ function result(structuredContent) {
   };
 }
 
-test("accepts a signed Catalog bundle v2 and optional pinned key", () => {
+function trustedOptions(signer) {
+  return {
+    trustedPublicKeys: { [signer.keyId]: signer.publicKey },
+  };
+}
+
+test("accepts a signed Catalog bundle v2 with a mandatory pinned key", () => {
   const fixture = createBundle();
 
   assert.equal(
@@ -454,11 +460,7 @@ test("accepts a signed Catalog bundle v2 and optional pinned key", () => {
       "resolve_catalog_bundle_v2",
       fixture.input,
       result(fixture.bundle),
-      {
-        trustedPublicKeys: {
-          [fixture.signer.keyId]: fixture.signer.publicKey,
-        },
-      },
+      trustedOptions(fixture.signer),
     ).structuredContent,
     fixture.bundle,
   );
@@ -494,6 +496,7 @@ test("rejects Markdown, manifest, fingerprint, signature, and KRC tampering", ()
           "resolve_catalog_bundle_v2",
           fixture.input,
           result(fixture.bundle),
+          trustedOptions(fixture.signer),
         ),
       { name: "CatalogV2ValidationError" },
       tamper,
@@ -505,6 +508,16 @@ test("requires configured pins and supports a rotation window", () => {
   const oldSigner = createSigner("catalog-ed25519-old");
   const currentSigner = createSigner("catalog-ed25519-current");
   const fixture = createBundle(oldSigner);
+
+  assert.throws(
+    () =>
+      validateCatalogV2ToolResult(
+        "resolve_catalog_bundle_v2",
+        fixture.input,
+        result(fixture.bundle),
+      ),
+    /requires profile catalogPublicKeys pins/,
+  );
 
   assert.doesNotThrow(() =>
     validateCatalogV2ToolResult(
@@ -551,6 +564,7 @@ test("rejects a correctly signed proof outside the trusted execution budget", ()
         "resolve_catalog_bundle_v2",
         fixture.input,
         result(fixture.bundle),
+        trustedOptions(fixture.signer),
       ),
     /resolution_elapsed_ms/,
   );
@@ -559,13 +573,25 @@ test("rejects a correctly signed proof outside the trusted execution budget", ()
 test("accepts a complete mixed Delta including same-timestamp hash changes", () => {
   const bundleFixture = createBundle();
   const deltaFixture = createDelta(bundleFixture);
+  const options = trustedOptions(bundleFixture.signer);
 
-  validateCatalogV2ToolInput("resolve_catalog_delta_v2", deltaFixture.input);
+  validateCatalogV2ToolResult(
+    "resolve_catalog_bundle_v2",
+    bundleFixture.input,
+    result(bundleFixture.bundle),
+    options,
+  );
+  validateCatalogV2ToolInput(
+    "resolve_catalog_delta_v2",
+    deltaFixture.input,
+    options,
+  );
   assert.doesNotThrow(() =>
     validateCatalogV2ToolResult(
       "resolve_catalog_delta_v2",
       deltaFixture.input,
       result(deltaFixture.delta),
+      options,
     ),
   );
   assert.equal(
@@ -585,6 +611,13 @@ test("accepts a complete mixed Delta including same-timestamp hash changes", () 
 test("rejects incomplete Delta partitions and an unverified previous proof", () => {
   const bundleFixture = createBundle();
   const incomplete = createDelta(bundleFixture);
+  const options = trustedOptions(bundleFixture.signer);
+  validateCatalogV2ToolResult(
+    "resolve_catalog_bundle_v2",
+    bundleFixture.input,
+    result(bundleFixture.bundle),
+    options,
+  );
   incomplete.delta.changes.unchanged.pop();
   assert.throws(
     () =>
@@ -592,14 +625,21 @@ test("rejects incomplete Delta partitions and an unverified previous proof", () 
         "resolve_catalog_delta_v2",
         incomplete.input,
         result(incomplete.delta),
+        options,
       ),
     /partitions/,
   );
 
-  const forged = createDelta(createBundle());
+  const forgedBase = createBundle();
+  const forged = createDelta(forgedBase);
   forged.input.previous.freshnessProof.signature = "A".repeat(86);
   assert.throws(
-    () => validateCatalogV2ToolInput("resolve_catalog_delta_v2", forged.input),
+    () =>
+      validateCatalogV2ToolInput(
+        "resolve_catalog_delta_v2",
+        forged.input,
+        trustedOptions(forgedBase.signer),
+      ),
     /signature/,
   );
 });

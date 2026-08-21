@@ -1,12 +1,13 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
 const pluginRoot = path.resolve(__dirname, "..");
-const repositoryRoot = path.resolve(pluginRoot, "../..");
 
 function readJson(relativePath) {
   return JSON.parse(
@@ -19,10 +20,21 @@ test("plugin and package versions stay aligned", () => {
   const packageJson = readJson("package.json");
 
   assert.equal(manifest.name, "docmost-knowledge");
-  assert.equal(manifest.version, "0.6.0");
+  assert.equal(manifest.version, "0.7.0");
   assert.equal(packageJson.version, manifest.version);
   assert.equal(manifest.mcpServers, "./.mcp.json");
   assert.ok(manifest.interface.defaultPrompt.length <= 3);
+
+  const skill = fs.readFileSync(
+    path.join(pluginRoot, "skills/docmost-knowledge/SKILL.md"),
+    "utf8",
+  );
+  const doctor = fs.readFileSync(
+    path.join(pluginRoot, "scripts/doctor.cjs"),
+    "utf8",
+  );
+  assert.ok(skill.includes(`version \`${manifest.version}\``));
+  assert.match(doctor, new RegExp(`Docmost MCP ${manifest.version}`));
 });
 
 test("mutation guidance distinguishes exact retries from changed requests", () => {
@@ -88,12 +100,12 @@ test("Catalog guidance requires live freshness and tuple-bound cache reuse", () 
     "utf8",
   );
 
-  assert.match(skill, /fresh challenge/);
+  assert.match(skill, /fresh[\s\S]*challenge/);
   assert.match(skill, /`resolve_catalog_bundle`/);
   assert.match(skill, /`resolve_catalog_delta`/);
   assert.match(operations, /\(page_id, updated_at, content_sha256\)/);
   assert.match(operations, /must not read Catalog/i);
-  assert.match(operations, /never reuse runtime\s+facts/i);
+  assert.match(operations, /never\s+reuse runtime\s+facts/i);
 });
 
 test("MCP manifest points to existing scripts with sufficient timeout", () => {
@@ -107,13 +119,23 @@ test("MCP manifest points to existing scripts with sufficient timeout", () => {
   }
 });
 
-test("Catalog v2 JSON Schemas are bundled with immutable version IDs", () => {
+test("Catalog v2 and v3 JSON Schemas are bundled with immutable version IDs", () => {
   const expected = new Map([
     ["catalog-bundle.v2.schema.json", "catalog-bundle.v2.schema.json"],
     ["catalog-delta.v2.schema.json", "catalog-delta.v2.schema.json"],
     [
       "catalog-freshness-proof.v2.schema.json",
       "catalog-freshness-proof.v2.schema.json",
+    ],
+    [
+      "catalog-resolution-ticket.v1.schema.json",
+      "catalog-resolution-ticket.v1.schema.json",
+    ],
+    ["catalog-bundle.v3.schema.json", "catalog-bundle.v3.schema.json"],
+    ["catalog-delta.v3.schema.json", "catalog-delta.v3.schema.json"],
+    [
+      "catalog-freshness-proof.v3.schema.json",
+      "catalog-freshness-proof.v3.schema.json",
     ],
   ]);
 
@@ -128,16 +150,7 @@ test("WorkBuddy manifest uses a portable plugin-root MCP path", () => {
   const manifest = readJson(".codebuddy-plugin/plugin.json");
   const packageJson = readJson("package.json");
   const mcpManifest = readJson(".workbuddy-mcp.json");
-  const marketplace = JSON.parse(
-    fs.readFileSync(
-      path.join(repositoryRoot, ".codebuddy-plugin/marketplace.json"),
-      "utf8",
-    ),
-  );
   const server = mcpManifest.mcpServers["docmost-knowledge"];
-  const marketplacePlugin = marketplace.plugins.find(
-    (plugin) => plugin.name === "docmost-knowledge",
-  );
 
   assert.equal(manifest.name, "docmost-knowledge");
   assert.equal(manifest.version, packageJson.version);
@@ -152,10 +165,38 @@ test("WorkBuddy manifest uses a portable plugin-root MCP path", () => {
     true,
   );
   assert.equal(fs.existsSync(path.join(pluginRoot, "scripts/run-node")), true);
-  assert.equal(marketplace.name, "open-context");
-  assert.equal(marketplacePlugin.source, "./plugins/docmost-knowledge");
-  assert.equal(marketplacePlugin.version, manifest.version);
 });
+
+test(
+  "installed distribution runs the full suite without repository parents",
+  { skip: process.env.DOCMOST_INSTALL_LAYOUT_CHILD === "1" },
+  () => {
+    const temporaryRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "docmost-knowledge-installed-"),
+    );
+    const installedRoot = path.join(temporaryRoot, "docmost-knowledge");
+    try {
+      fs.cpSync(pluginRoot, installedRoot, { recursive: true });
+      const tests = fs
+        .readdirSync(path.join(installedRoot, "tests"))
+        .filter((file) => file.endsWith(".test.cjs"))
+        .sort()
+        .map((file) => path.join("tests", file));
+      const result = spawnSync(process.execPath, ["--test", ...tests], {
+        cwd: installedRoot,
+        encoding: "utf8",
+        env: { ...process.env, DOCMOST_INSTALL_LAYOUT_CHILD: "1" },
+      });
+      assert.equal(
+        result.status,
+        0,
+        [result.stdout, result.stderr].filter(Boolean).join("\n"),
+      );
+    } finally {
+      fs.rmSync(temporaryRoot, { recursive: true, force: true });
+    }
+  },
+);
 
 test("plugin source contains no unfinished placeholders", () => {
   const files = [

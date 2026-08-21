@@ -6,6 +6,10 @@ const {
   MAX_ROOTS: MAX_CATALOG_ROOTS,
 } = require("./catalog-bundle-contract.cjs");
 const { CATALOG_V2_TOOLS } = require("./catalog-bundle-v2-contract.cjs");
+const {
+  BEGIN_CATALOG_RESOLUTION_TOOL,
+  CATALOG_V3_TOOLS,
+} = require("./catalog-bundle-v3-contract.cjs");
 
 const TEMPLATE_READ_TOOLS = Object.freeze([
   "list_templates",
@@ -140,6 +144,12 @@ function analyzeToolCatalog(tools) {
         supported: false,
         compatible: false,
         missingTools: [...CATALOG_V2_TOOLS],
+        issues: ["tools/list did not return an array"],
+      },
+      catalogV3: {
+        supported: false,
+        compatible: false,
+        missingTools: [...CATALOG_V3_TOOLS],
         issues: ["tools/list did not return an array"],
       },
     };
@@ -395,13 +405,171 @@ function analyzeToolCatalog(tools) {
     );
   }
   if (catalogV2Supported) issues.push(...catalogV2Issues);
+
+  const presentCatalogV3Tools = CATALOG_V3_TOOLS.filter((name) =>
+    byName.has(name),
+  );
+  const missingCatalogV3Tools = CATALOG_V3_TOOLS.filter(
+    (name) => !byName.has(name),
+  );
+  const catalogV3Issues = [];
+  const beginV3Tool = byName.get(BEGIN_CATALOG_RESOLUTION_TOOL);
+  if (beginV3Tool) {
+    if (!isObject(beginV3Tool.inputSchema)) {
+      catalogV3Issues.push(`${BEGIN_CATALOG_RESOLUTION_TOOL} has no inputSchema`);
+    } else {
+      for (const field of [
+        "contract",
+        "catalogRootPageId",
+        "environment",
+        "challenge",
+      ]) {
+        if (!requiresProperty(beginV3Tool, field)) {
+          catalogV3Issues.push(
+            `${BEGIN_CATALOG_RESOLUTION_TOOL} must require ${field}`,
+          );
+        }
+      }
+      if (
+        getObjectProperty(beginV3Tool, "contract")?.const !==
+        "qts-fact-catalog.v1"
+      ) {
+        catalogV3Issues.push(
+          `${BEGIN_CATALOG_RESOLUTION_TOOL} must require contract qts-fact-catalog.v1`,
+        );
+      }
+      if (
+        getObjectProperty(beginV3Tool, "catalogRootPageId")?.format !== "uuid"
+      ) {
+        catalogV3Issues.push(
+          `${BEGIN_CATALOG_RESOLUTION_TOOL} catalogRootPageId must use uuid format`,
+        );
+      }
+      const challenge = getObjectProperty(beginV3Tool, "challenge");
+      if (challenge?.minLength !== 16 || challenge?.maxLength !== 128) {
+        catalogV3Issues.push(
+          `${BEGIN_CATALOG_RESOLUTION_TOOL} challenge must advertise 16-128 bytes`,
+        );
+      }
+    }
+  }
+
+  for (const name of [
+    "resolve_catalog_bundle_v3",
+    "resolve_catalog_delta_v3",
+  ]) {
+    const tool = byName.get(name);
+    if (!tool) continue;
+    if (!isObject(tool.inputSchema)) {
+      catalogV3Issues.push(`${name} has no inputSchema`);
+      continue;
+    }
+    const required = [
+      "contract",
+      "catalogRootPageId",
+      "environment",
+      "roots",
+      "ticket",
+      ...(name === "resolve_catalog_delta_v3" ? ["previous"] : []),
+    ];
+    for (const field of required) {
+      if (!requiresProperty(tool, field)) {
+        catalogV3Issues.push(`${name} must require ${field}`);
+      }
+    }
+    if (requiresProperty(tool, "challenge")) {
+      catalogV3Issues.push(`${name} must bind a ticket instead of challenge`);
+    }
+    if (getObjectProperty(tool, "contract")?.const !== "qts-fact-catalog.v1") {
+      catalogV3Issues.push(`${name} must require contract qts-fact-catalog.v1`);
+    }
+    if (getObjectProperty(tool, "catalogRootPageId")?.format !== "uuid") {
+      catalogV3Issues.push(`${name} catalogRootPageId must use uuid format`);
+    }
+    const roots = getObjectProperty(tool, "roots");
+    if (
+      roots?.type !== "array" ||
+      roots.minItems !== 1 ||
+      roots.maxItems !== MAX_CATALOG_ROOTS
+    ) {
+      catalogV3Issues.push(
+        `${name} roots must advertise 1-${MAX_CATALOG_ROOTS} items`,
+      );
+    }
+    const ticket = getObjectProperty(tool, "ticket");
+    const ticketRequired = ticket?.required;
+    if (
+      !Array.isArray(ticketRequired) ||
+      ![
+        "schema_version",
+        "signature_algorithm",
+        "public_key_format",
+        "public_key",
+        "key_id",
+        "ticket_id",
+        "issued_at",
+        "expires_at",
+        "challenge",
+        "catalog_root_page_id",
+        "environment",
+        "authorization_context_sha256",
+        "signature",
+      ].every((field) => ticketRequired.includes(field))
+    ) {
+      catalogV3Issues.push(`${name} resolution ticket schema is incompatible`);
+    }
+  }
+
+  const deltaV3Tool = byName.get("resolve_catalog_delta_v3");
+  if (deltaV3Tool) {
+    const previous = getObjectProperty(deltaV3Tool, "previous");
+    const previousRequired = previous?.required;
+    const pages = isObject(previous?.properties?.pages)
+      ? previous.properties.pages
+      : null;
+    const pageItem = isObject(pages?.items) ? pages.items : null;
+    const pageRequired = pageItem?.required;
+    if (
+      !Array.isArray(previousRequired) ||
+      !["bundleFingerprint", "pages", "freshnessProof"].every((field) =>
+        previousRequired.includes(field),
+      ) ||
+      pages?.type !== "array" ||
+      pages.maxItems !== MAX_CATALOG_PAGES ||
+      !Array.isArray(pageRequired) ||
+      ![
+        "pageId",
+        "updatedAt",
+        "contentSha256",
+        "frontMatterSha256",
+      ].every((field) => pageRequired.includes(field)) ||
+      pageItem?.properties?.pageId?.format !== "uuid" ||
+      pageItem?.properties?.updatedAt?.format !== "date-time" ||
+      !isObject(previous?.properties?.freshnessProof)
+    ) {
+      catalogV3Issues.push(
+        "resolve_catalog_delta_v3 previous signed state schema is incompatible",
+      );
+    }
+  }
+  const catalogV3Supported = presentCatalogV3Tools.length > 0;
+  const catalogV3Compatible =
+    presentCatalogV3Tools.length === CATALOG_V3_TOOLS.length &&
+    catalogV3Issues.length === 0;
+  if (catalogV3Supported && missingCatalogV3Tools.length > 0) {
+    issues.push(
+      `Catalog v3 capability is partial; missing tools: ${missingCatalogV3Tools.join(", ")}`,
+    );
+  }
+  if (catalogV3Supported) issues.push(...catalogV3Issues);
   const coreCompatible = missingTools.length === 0 && coreIssues.length === 0;
 
   return {
     compatible:
       coreCompatible &&
       (!catalogSupported || catalogCompatible) &&
-      (!catalogV2Supported || catalogV2Compatible),
+      (!catalogV2Supported || catalogV2Compatible) &&
+      (!catalogV3Supported || catalogV3Compatible),
     coreCompatible,
     toolCount: tools.length,
     missingTools,
@@ -418,6 +586,12 @@ function analyzeToolCatalog(tools) {
       compatible: catalogV2Compatible,
       missingTools: missingCatalogV2Tools,
       issues: catalogV2Issues,
+    },
+    catalogV3: {
+      supported: catalogV3Supported,
+      compatible: catalogV3Compatible,
+      missingTools: missingCatalogV3Tools,
+      issues: catalogV3Issues,
     },
   };
 }
@@ -448,6 +622,7 @@ module.exports = {
   CORE_REQUIRED_TOOLS,
   CATALOG_TOOLS,
   CATALOG_V2_TOOLS,
+  CATALOG_V3_TOOLS,
   EXPECTED_UPDATED_AT_TOOLS,
   MUTATION_TOOLS,
   REQUIRED_TOOLS,

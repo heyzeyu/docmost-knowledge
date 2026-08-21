@@ -38,30 +38,42 @@ scraping or direct database access.
 
 ## Catalog workflow
 
-- Prefer `resolve_catalog_bundle_v2` when a diagnostic orchestrator needs a
-  signed, structured `qts-fact-catalog.v1` reference closure. Use
-  `resolve_catalog_delta_v2` only with the exact prior signed proof and manifest.
-  Ordinary knowledge search continues to use `search_docs` or
-  `semantic_search_docs`.
+- Connector version `0.7.0` implements the strict ticket-bound Catalog v3
+  workflow while preserving the published v2 schemas.
+- Prefer the ticket-bound v3 workflow when a diagnostic orchestrator needs a
+  signed, structured `qts-fact-catalog.v1` reference closure. Ordinary
+  knowledge search continues to use `search_docs` or `semantic_search_docs`.
+- Start with `begin_catalog_resolution`, passing a fresh 16-128 byte challenge,
+  the exact Catalog root, and environment. Its `issued_at` proves only when the
+  connector received this start call; never describe it as the user's message
+  time. Do not supply a caller-chosen `started_at`.
+- Use the returned signed ticket exactly once with
+  `resolve_catalog_bundle_v3`, or with `resolve_catalog_delta_v3` and the exact
+  prior v3 proof and manifest. After an ambiguous transport failure, discard
+  the challenge and ticket and begin again.
+- Delta v3 may keep the same roots or add roots. It must return exact
+  `root_changes` and rebuild the complete current closure. Do not remove a
+  previous root, reuse an old ticket or challenge, or present an old
+  authorization context as current.
+- Treat the v2 pair as signed compatibility only. A workflow that requires a
+  trusted start ticket, front-matter hash binding, or roots expansion must not
+  silently downgrade to v2.
 - Treat `resolve_catalog_bundle` and `resolve_catalog_delta` as immutable legacy
   v1 compatibility tools. Do not silently downgrade a workflow that requires
-  signed freshness; report that v2 is unavailable instead.
-- Start every diagnosis with a fresh challenge of 16-128 UTF-8 bytes. Never
-  carry a challenge or freshness proof into another diagnosis.
-- Never retry a v2 Catalog call with the same challenge after an ambiguous
-  transport failure. Start a new call with a fresh challenge.
-- Use `resolve_catalog_bundle_v2` when there is no revalidated local manifest.
-  Use `resolve_catalog_delta_v2` with the previous fingerprint, page tuples,
-  and signed freshness proof only
-  to revalidate a static cache and reconstruct the current closure.
+  signed freshness; report that the required version is unavailable instead.
+- Every v2/v3 call requires a profile `catalogPublicKeys` trust anchor. Missing
+  pins, an unknown `key_id`, or a response key that differs from its pin is a
+  hard Catalog failure but does not disable ordinary Docmost tools.
 - Reuse cached Markdown only when the current proof returns the exact same
-  `(page_id, updated_at, content_sha256)` tuple. Never reuse prior runtime
-  facts, incident conclusions, or unverified page content.
+  `(page_id, updated_at, content_sha256)` tuple and, for v3,
+  `front_matter_sha256`. Never reuse prior runtime facts, incident conclusions,
+  or unverified page content.
 - Treat missing Catalog tools as an unsupported optional capability, not as a
   failure of ordinary Docmost work. Treat one missing tool in an advertised
-  version pair, a challenge mismatch, hash mismatch, signing-key mismatch,
-  incomplete Delta partition, or invalid fingerprint as a hard Catalog
-  validation failure.
+  version set, a ticket or challenge mismatch, Markdown/front-matter mismatch,
+  hash or signing-key mismatch, incomplete Delta partition, invalid edge,
+  incorrect closure flag, or invalid fingerprint as a hard Catalog validation
+  failure.
 
 ## Write safety
 

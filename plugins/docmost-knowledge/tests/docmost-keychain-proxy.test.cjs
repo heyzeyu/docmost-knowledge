@@ -1,7 +1,10 @@
 "use strict";
 
 const assert = require("node:assert/strict");
-const { generateKeyPairSync } = require("node:crypto");
+const {
+  generateKeyPairSync,
+  sign: signBytes,
+} = require("node:crypto");
 const test = require("node:test");
 
 const {
@@ -27,6 +30,9 @@ const {
   computeBundleFingerprint,
   sha256,
 } = require("../scripts/catalog-bundle-contract.cjs");
+const {
+  stableStringify: stableStringifyV3,
+} = require("../scripts/catalog-bundle-v3-contract.cjs");
 
 const catalogPageId = "11111111-1111-4111-8111-111111111111";
 const catalogSpaceId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -179,6 +185,7 @@ test("getConfig reads non-secret settings from the config file", () => {
     maxReadRetries: 1,
     retryDelayMs: 250,
     maxResponseBytes: DEFAULT_MAX_RESPONSE_BYTES,
+    catalogMaxResolutionWindowMs: 120_000,
   });
 });
 
@@ -217,6 +224,7 @@ test("getConfig selects a profile and applies shared and environment settings", 
     maxReadRetries: 2,
     retryDelayMs: 250,
     maxResponseBytes: DEFAULT_MAX_RESPONSE_BYTES,
+    catalogMaxResolutionWindowMs: 120_000,
   });
 });
 
@@ -422,7 +430,7 @@ test("initialize is handled locally", async () => {
 
   assert.equal(result.protocolVersion, "2025-11-25");
   assert.equal(result.serverInfo.name, "docmost-knowledge");
-  assert.equal(result.serverInfo.version, "0.6.0");
+  assert.equal(result.serverInfo.version, "0.7.0");
   assert.deepEqual(result.capabilities, { tools: { listChanged: false } });
 });
 
@@ -549,6 +557,20 @@ test("tools/call enforces Catalog v2 validation at the proxy boundary", async ()
     roots: [{ pageId: catalogPageId }],
     challenge: "diagnosis-unique-v2-0001",
   };
+  const { publicKey } = generateKeyPairSync("ed25519");
+  const encodedPublicKey = publicKey
+    .export({ format: "der", type: "spki" })
+    .toString("base64url");
+  const invalidResponseForward = async () => ({
+    content: [{ type: "text", text: "invalid v2 response" }],
+    structuredContent: {},
+  });
+  invalidResponseForward.catalogPublicKeys = {
+    "catalog-ed25519-current": encodedPublicKey,
+  };
+  const neverForward = () =>
+    assert.fail("invalid Catalog v2 input must not be forwarded");
+  neverForward.catalogPublicKeys = invalidResponseForward.catalogPublicKeys;
 
   await assert.rejects(
     dispatchRequest(
@@ -561,7 +583,7 @@ test("tools/call enforces Catalog v2 validation at the proxy boundary", async ()
           arguments: { ...argumentsValue, challenge: "short" },
         },
       },
-      () => assert.fail("invalid Catalog v2 input must not be forwarded"),
+      neverForward,
     ),
     (error) => error.code === ErrorCode.InvalidParams,
   );
@@ -577,15 +599,70 @@ test("tools/call enforces Catalog v2 validation at the proxy boundary", async ()
           arguments: argumentsValue,
         },
       },
-      async () => ({
-        content: [{ type: "text", text: "invalid v2 response" }],
-        structuredContent: {},
-      }),
+      invalidResponseForward,
     ),
     (error) =>
       error.code === ErrorCode.InternalError &&
       /Catalog v2 response validation failed/.test(error.message),
   );
+});
+
+test("tools/call validates a pinned Catalog v3 start ticket", async () => {
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const publicKeyEncoded = publicKey
+    .export({ format: "der", type: "spki" })
+    .toString("base64url");
+  const challenge = "diagnosis-v3-ticket-0001";
+  const issuedAt = new Date(Date.now() - 100).toISOString();
+  const unsigned = {
+    schema_version: "catalog-resolution-ticket.v1",
+    signature_algorithm: "ed25519",
+    public_key_format: "spki-der-base64url",
+    public_key: publicKeyEncoded,
+    key_id: "catalog-ed25519-current",
+    ticket_id: "66666666-6666-4666-8666-666666666666",
+    issued_at: issuedAt,
+    expires_at: new Date(Date.parse(issuedAt) + 120_000).toISOString(),
+    challenge,
+    catalog_root_page_id: catalogPageId,
+    environment: "prod",
+    authorization_context_sha256: "a".repeat(64),
+  };
+  const ticket = {
+    ...unsigned,
+    signature: signBytes(
+      null,
+      Buffer.from(stableStringifyV3(unsigned), "utf8"),
+      privateKey,
+    ).toString("base64url"),
+  };
+  const forward = async () => ({
+    content: [{ type: "text", text: "Catalog resolution ticket" }],
+    structuredContent: ticket,
+  });
+  forward.catalogPublicKeys = {
+    "catalog-ed25519-current": publicKeyEncoded,
+  };
+  forward.catalogMaxResolutionWindowMs = 120_000;
+
+  const response = await dispatchRequest(
+    {
+      jsonrpc: "2.0",
+      id: 9,
+      method: "tools/call",
+      params: {
+        name: "begin_catalog_resolution",
+        arguments: {
+          contract: "qts-fact-catalog.v1",
+          catalogRootPageId: catalogPageId,
+          environment: "prod",
+          challenge,
+        },
+      },
+    },
+    forward,
+  );
+  assert.equal(response.structuredContent.ticket_id, ticket.ticket_id);
 });
 
 test("handleLine returns a JSON-RPC parse error", async () => {
