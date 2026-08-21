@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.0 - 2026-08-21
+
+- Added separately negotiated `resolve_catalog_bundle_v2` and
+  `resolve_catalog_delta_v2` tools while keeping the published v1 pair
+  immutable.
+- Added strict `catalog-bundle.v2`, `catalog-delta.v2`, and signed
+  `catalog-freshness-proof.v2` validation for fenced-YAML Catalog closures.
+- Verify canonical ordering, Markdown hashes, resolved-root KRC applicability,
+  full fingerprints, Ed25519 signatures, and complete Delta partitions before
+  returning remote results.
+- Added optional profile-level Catalog public-key pinning through
+  `catalogPublicKeys` or `DOCMOST_CATALOG_PUBLIC_KEYS`, including rotation with
+  multiple trusted key IDs.
+- Added v2 capability reporting to the doctor and live smoke test, bundled JSON
+  Schemas, tamper fixtures, and signed Bundle/Delta regression coverage.
+- Disabled transparent retry for challenge-consuming v2 calls; ambiguous
+  transport failures now require a fresh caller-generated challenge.
+
 ## 0.5.0 - 2026-08-20
 
 - Added optional capability negotiation for `resolve_catalog_bundle` and

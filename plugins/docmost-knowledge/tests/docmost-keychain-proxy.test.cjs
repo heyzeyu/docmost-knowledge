@@ -1,6 +1,7 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const { generateKeyPairSync } = require("node:crypto");
 const test = require("node:test");
 
 const {
@@ -11,6 +12,7 @@ const {
   dispatchRequest,
   getConfig,
   handleLine,
+  parseCatalogPublicKeys,
   parseIntegerSetting,
   readBoundedJsonResponse,
   readConfigFile,
@@ -282,6 +284,52 @@ test("parseIntegerSetting enforces operational limits", () => {
   );
 });
 
+test("parseCatalogPublicKeys accepts Ed25519 pins and rejects malformed keys", () => {
+  const { publicKey } = generateKeyPairSync("ed25519");
+  const encoded = publicKey
+    .export({ format: "der", type: "spki" })
+    .toString("base64url");
+
+  assert.deepEqual(
+    parseCatalogPublicKeys(
+      JSON.stringify({ "catalog-ed25519-current": encoded }),
+    ),
+    { "catalog-ed25519-current": encoded },
+  );
+  assert.throws(
+    () => parseCatalogPublicKeys('{"catalog-ed25519-current":"bad"}'),
+    /invalid key/,
+  );
+  const rsa = generateKeyPairSync("rsa", { modulusLength: 2048 })
+    .publicKey.export({ format: "der", type: "spki" })
+    .toString("base64url");
+  assert.throws(
+    () => parseCatalogPublicKeys({ "catalog-rsa": rsa }),
+    /Ed25519/,
+  );
+});
+
+test("getConfig reads profile-level Catalog signing-key pins", () => {
+  const { publicKey } = generateKeyPairSync("ed25519");
+  const encoded = publicKey
+    .export({ format: "der", type: "spki" })
+    .toString("base64url");
+  const config = getConfig(
+    { DOCMOST_CONFIG_FILE: "/tmp/docmost-config.json" },
+    () =>
+      JSON.stringify({
+        mcpUrl: "https://docs.example.com/mcp",
+        keychainService: "Docmost MCP",
+        keychainAccount: "user@example.com",
+        catalogPublicKeys: { "catalog-ed25519-current": encoded },
+      }),
+  );
+
+  assert.deepEqual(config.catalogPublicKeys, {
+    "catalog-ed25519-current": encoded,
+  });
+});
+
 test("readConfigFile rejects malformed configuration", () => {
   assert.throws(
     () => readConfigFile("/tmp/docmost-config.json", () => "not json"),
@@ -374,7 +422,7 @@ test("initialize is handled locally", async () => {
 
   assert.equal(result.protocolVersion, "2025-11-25");
   assert.equal(result.serverInfo.name, "docmost-knowledge");
-  assert.equal(result.serverInfo.version, "0.5.0");
+  assert.equal(result.serverInfo.version, "0.6.0");
   assert.deepEqual(result.capabilities, { tools: { listChanged: false } });
 });
 
@@ -490,6 +538,53 @@ test("tools/call validates Catalog input and output around forwarding", async ()
     (error) =>
       error.code === ErrorCode.InternalError &&
       /response validation failed/.test(error.message),
+  );
+});
+
+test("tools/call enforces Catalog v2 validation at the proxy boundary", async () => {
+  const argumentsValue = {
+    contract: "qts-fact-catalog.v1",
+    catalogRootPageId: catalogPageId,
+    environment: "prod",
+    roots: [{ pageId: catalogPageId }],
+    challenge: "diagnosis-unique-v2-0001",
+  };
+
+  await assert.rejects(
+    dispatchRequest(
+      {
+        jsonrpc: "2.0",
+        id: 7,
+        method: "tools/call",
+        params: {
+          name: "resolve_catalog_bundle_v2",
+          arguments: { ...argumentsValue, challenge: "short" },
+        },
+      },
+      () => assert.fail("invalid Catalog v2 input must not be forwarded"),
+    ),
+    (error) => error.code === ErrorCode.InvalidParams,
+  );
+
+  await assert.rejects(
+    dispatchRequest(
+      {
+        jsonrpc: "2.0",
+        id: 8,
+        method: "tools/call",
+        params: {
+          name: "resolve_catalog_bundle_v2",
+          arguments: argumentsValue,
+        },
+      },
+      async () => ({
+        content: [{ type: "text", text: "invalid v2 response" }],
+        structuredContent: {},
+      }),
+    ),
+    (error) =>
+      error.code === ErrorCode.InternalError &&
+      /Catalog v2 response validation failed/.test(error.message),
   );
 });
 
@@ -746,6 +841,44 @@ test("callRemote never automatically retries a mutation", async () => {
         };
       },
       async () => assert.fail("mutation retry delay must not run"),
+    ),
+    /HTTP 503/,
+  );
+  assert.equal(calls, 1);
+});
+
+test("callRemote never replays a challenge-consuming Catalog v2 request", async () => {
+  let calls = 0;
+  await assert.rejects(
+    callRemote(
+      {
+        remoteUrl: "https://docs.example.com/mcp",
+        maxReadRetries: 3,
+        retryDelayMs: 0,
+      },
+      "secret-token-value-for-tests",
+      "tools/call",
+      {
+        name: "resolve_catalog_bundle_v2",
+        arguments: {
+          contract: "qts-fact-catalog.v1",
+          catalogRootPageId: "11111111-1111-4111-8111-111111111111",
+          environment: "prod",
+          roots: [{ pageId: "22222222-2222-4222-8222-222222222222" }],
+          challenge: "diagnosis-unique-v2-retry",
+        },
+      },
+      async () => {
+        calls += 1;
+        return {
+          ok: false,
+          status: 503,
+          json: async () => {
+            throw new Error("not json");
+          },
+        };
+      },
+      async () => assert.fail("Catalog v2 retry delay must not run"),
     ),
     /HTTP 503/,
   );

@@ -5,6 +5,7 @@ const {
   MAX_PAGES: MAX_CATALOG_PAGES,
   MAX_ROOTS: MAX_CATALOG_ROOTS,
 } = require("./catalog-bundle-contract.cjs");
+const { CATALOG_V2_TOOLS } = require("./catalog-bundle-v2-contract.cjs");
 
 const TEMPLATE_READ_TOOLS = Object.freeze([
   "list_templates",
@@ -133,6 +134,12 @@ function analyzeToolCatalog(tools) {
         supported: false,
         compatible: false,
         missingTools: [...CATALOG_TOOLS],
+        issues: ["tools/list did not return an array"],
+      },
+      catalogV2: {
+        supported: false,
+        compatible: false,
+        missingTools: [...CATALOG_V2_TOOLS],
         issues: ["tools/list did not return an array"],
       },
     };
@@ -301,10 +308,100 @@ function analyzeToolCatalog(tools) {
     );
   }
   if (catalogSupported) issues.push(...catalogIssues);
+  const presentCatalogV2Tools = CATALOG_V2_TOOLS.filter((name) =>
+    byName.has(name),
+  );
+  const missingCatalogV2Tools = CATALOG_V2_TOOLS.filter(
+    (name) => !byName.has(name),
+  );
+  const catalogV2Issues = [];
+  for (const name of presentCatalogV2Tools) {
+    const tool = byName.get(name);
+    if (!isObject(tool?.inputSchema)) {
+      catalogV2Issues.push(`${name} has no inputSchema`);
+      continue;
+    }
+    for (const field of [
+      "contract",
+      "catalogRootPageId",
+      "environment",
+      "roots",
+      "challenge",
+    ]) {
+      if (!requiresProperty(tool, field)) {
+        catalogV2Issues.push(`${name} must require ${field}`);
+      }
+    }
+    if (getObjectProperty(tool, "contract")?.const !== "qts-fact-catalog.v1") {
+      catalogV2Issues.push(`${name} must require contract qts-fact-catalog.v1`);
+    }
+    if (getObjectProperty(tool, "catalogRootPageId")?.format !== "uuid") {
+      catalogV2Issues.push(`${name} catalogRootPageId must use uuid format`);
+    }
+    const roots = getObjectProperty(tool, "roots");
+    if (
+      roots?.type !== "array" ||
+      roots.minItems !== 1 ||
+      roots.maxItems !== MAX_CATALOG_ROOTS
+    ) {
+      catalogV2Issues.push(
+        `${name} roots must advertise 1-${MAX_CATALOG_ROOTS} items`,
+      );
+    }
+    const challenge = getObjectProperty(tool, "challenge");
+    if (challenge?.minLength !== 16 || challenge?.maxLength !== 128) {
+      catalogV2Issues.push(`${name} challenge must advertise 16-128 bytes`);
+    }
+  }
+  const deltaV2Tool = byName.get("resolve_catalog_delta_v2");
+  if (deltaV2Tool && !requiresProperty(deltaV2Tool, "previous")) {
+    catalogV2Issues.push("resolve_catalog_delta_v2 must require previous");
+  }
+  if (deltaV2Tool) {
+    const previous = getObjectProperty(deltaV2Tool, "previous");
+    const previousRequired = previous?.required;
+    const pages = isObject(previous?.properties?.pages)
+      ? previous.properties.pages
+      : null;
+    const pageItem = isObject(pages?.items) ? pages.items : null;
+    const pageRequired = pageItem?.required;
+    if (
+      !Array.isArray(previousRequired) ||
+      !["bundleFingerprint", "pages", "freshnessProof"].every((field) =>
+        previousRequired.includes(field),
+      ) ||
+      pages?.type !== "array" ||
+      pages.maxItems !== MAX_CATALOG_PAGES ||
+      !Array.isArray(pageRequired) ||
+      !["pageId", "updatedAt", "contentSha256"].every((field) =>
+        pageRequired.includes(field),
+      ) ||
+      pageItem?.properties?.pageId?.format !== "uuid" ||
+      pageItem?.properties?.updatedAt?.format !== "date-time" ||
+      !isObject(previous?.properties?.freshnessProof)
+    ) {
+      catalogV2Issues.push(
+        "resolve_catalog_delta_v2 previous signed state schema is incompatible",
+      );
+    }
+  }
+  const catalogV2Supported = presentCatalogV2Tools.length > 0;
+  const catalogV2Compatible =
+    presentCatalogV2Tools.length === CATALOG_V2_TOOLS.length &&
+    catalogV2Issues.length === 0;
+  if (catalogV2Supported && missingCatalogV2Tools.length > 0) {
+    issues.push(
+      `Catalog v2 capability is partial; missing tools: ${missingCatalogV2Tools.join(", ")}`,
+    );
+  }
+  if (catalogV2Supported) issues.push(...catalogV2Issues);
   const coreCompatible = missingTools.length === 0 && coreIssues.length === 0;
 
   return {
-    compatible: coreCompatible && (!catalogSupported || catalogCompatible),
+    compatible:
+      coreCompatible &&
+      (!catalogSupported || catalogCompatible) &&
+      (!catalogV2Supported || catalogV2Compatible),
     coreCompatible,
     toolCount: tools.length,
     missingTools,
@@ -315,6 +412,12 @@ function analyzeToolCatalog(tools) {
       compatible: catalogCompatible,
       missingTools: missingCatalogTools,
       issues: catalogIssues,
+    },
+    catalogV2: {
+      supported: catalogV2Supported,
+      compatible: catalogV2Compatible,
+      missingTools: missingCatalogV2Tools,
+      issues: catalogV2Issues,
     },
   };
 }
@@ -344,6 +447,7 @@ module.exports = {
   CONFIRMATION_TOOLS,
   CORE_REQUIRED_TOOLS,
   CATALOG_TOOLS,
+  CATALOG_V2_TOOLS,
   EXPECTED_UPDATED_AT_TOOLS,
   MUTATION_TOOLS,
   REQUIRED_TOOLS,

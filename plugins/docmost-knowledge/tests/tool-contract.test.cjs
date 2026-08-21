@@ -5,6 +5,7 @@ const test = require("node:test");
 
 const {
   CATALOG_TOOLS,
+  CATALOG_V2_TOOLS,
   CONFIRMATION_TOOLS,
   EXPECTED_UPDATED_AT_TOOLS,
   MUTATION_TOOLS,
@@ -53,6 +54,59 @@ function addCatalogCapabilities(catalog, names = CATALOG_TOOLS) {
           },
         },
         required: ["bundleFingerprint", "pages"],
+      };
+    }
+    catalog.push({
+      name,
+      inputSchema: {
+        type: "object",
+        properties,
+        required,
+        additionalProperties: false,
+      },
+    });
+  }
+  return catalog;
+}
+
+function addCatalogV2Capabilities(catalog, names = CATALOG_V2_TOOLS) {
+  for (const name of names) {
+    const required = [
+      "contract",
+      "catalogRootPageId",
+      "environment",
+      "roots",
+      "challenge",
+    ];
+    const properties = {
+      contract: { type: "string", const: "qts-fact-catalog.v1" },
+      catalogRootPageId: { type: "string", format: "uuid" },
+      environment: { type: "string" },
+      roots: { type: "array", minItems: 1, maxItems: 32 },
+      challenge: { type: "string", minLength: 16, maxLength: 128 },
+    };
+    if (name === "resolve_catalog_delta_v2") {
+      required.push("previous");
+      properties.previous = {
+        type: "object",
+        properties: {
+          bundleFingerprint: { type: "string" },
+          pages: {
+            type: "array",
+            maxItems: 512,
+            items: {
+              type: "object",
+              properties: {
+                pageId: { type: "string", format: "uuid" },
+                updatedAt: { type: "string", format: "date-time" },
+                contentSha256: { type: "string" },
+              },
+              required: ["pageId", "updatedAt", "contentSha256"],
+            },
+          },
+          freshnessProof: { type: "object" },
+        },
+        required: ["bundleFingerprint", "pages", "freshnessProof"],
       };
     }
     catalog.push({
@@ -145,6 +199,51 @@ test("analyzeToolCatalog keeps the v0.4 core contract compatible", () => {
   assert.equal(report.catalog.supported, false);
   assert.equal(report.catalog.compatible, false);
   assert.deepEqual(report.catalog.missingTools, CATALOG_TOOLS);
+  assert.equal(report.catalogV2.supported, false);
+  assert.equal(report.catalogV2.compatible, false);
+  assert.deepEqual(report.catalogV2.missingTools, CATALOG_V2_TOOLS);
+});
+
+test("analyzeToolCatalog accepts the complete signed Catalog v2 capability", () => {
+  const catalog = addCatalogV2Capabilities(createCompatibleCatalog());
+  const report = analyzeToolCatalog(catalog);
+
+  assert.equal(report.compatible, true);
+  assert.equal(report.catalogV2.supported, true);
+  assert.equal(report.catalogV2.compatible, true);
+  assert.deepEqual(report.catalogV2.missingTools, []);
+  assert.deepEqual(report.catalogV2.issues, []);
+});
+
+test("analyzeToolCatalog rejects partial or unsigned Catalog v2 schemas", () => {
+  const partial = analyzeToolCatalog(
+    addCatalogV2Capabilities(createCompatibleCatalog(), [
+      "resolve_catalog_bundle_v2",
+    ]),
+  );
+  assert.equal(partial.compatible, false);
+  assert.deepEqual(partial.catalogV2.missingTools, [
+    "resolve_catalog_delta_v2",
+  ]);
+  assert.match(
+    formatContractReport(partial),
+    /Catalog v2 capability is partial/,
+  );
+
+  const catalog = addCatalogV2Capabilities(createCompatibleCatalog());
+  const delta = catalog.find(
+    (tool) => tool.name === "resolve_catalog_delta_v2",
+  );
+  delta.inputSchema.properties.previous.required = [
+    "bundleFingerprint",
+    "pages",
+  ];
+  const unsigned = analyzeToolCatalog(catalog);
+  assert.equal(unsigned.catalogV2.compatible, false);
+  assert.match(
+    formatContractReport(unsigned),
+    /previous signed state schema is incompatible/,
+  );
 });
 
 test("analyzeToolCatalog accepts the complete optional Catalog capability", () => {
@@ -258,6 +357,9 @@ test("isRetrySafe retries only known read operations", () => {
   );
   for (const name of CATALOG_TOOLS) {
     assert.equal(isRetrySafe("tools/call", { name, arguments: {} }), true);
+  }
+  for (const name of CATALOG_V2_TOOLS) {
+    assert.equal(isRetrySafe("tools/call", { name, arguments: {} }), false);
   }
   for (const name of TEMPLATE_READ_TOOLS) {
     assert.equal(isRetrySafe("tools/call", { name, arguments: {} }), true);

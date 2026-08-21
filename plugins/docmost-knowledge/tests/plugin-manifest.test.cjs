@@ -19,7 +19,7 @@ test("plugin and package versions stay aligned", () => {
   const packageJson = readJson("package.json");
 
   assert.equal(manifest.name, "docmost-knowledge");
-  assert.equal(manifest.version, "0.5.0");
+  assert.equal(manifest.version, "0.6.0");
   assert.equal(packageJson.version, manifest.version);
   assert.equal(manifest.mcpServers, "./.mcp.json");
   assert.ok(manifest.interface.defaultPrompt.length <= 3);
@@ -104,6 +104,23 @@ test("MCP manifest points to existing scripts with sufficient timeout", () => {
   assert.ok(server.tool_timeout_sec >= 120);
   for (const script of server.args) {
     assert.equal(fs.existsSync(path.join(pluginRoot, script)), true);
+  }
+});
+
+test("Catalog v2 JSON Schemas are bundled with immutable version IDs", () => {
+  const expected = new Map([
+    ["catalog-bundle.v2.schema.json", "catalog-bundle.v2.schema.json"],
+    ["catalog-delta.v2.schema.json", "catalog-delta.v2.schema.json"],
+    [
+      "catalog-freshness-proof.v2.schema.json",
+      "catalog-freshness-proof.v2.schema.json",
+    ],
+  ]);
+
+  for (const [file, schemaId] of expected) {
+    const schema = readJson(`schemas/${file}`);
+    assert.equal(schema.$id, schemaId);
+    assert.equal(schema.additionalProperties, false);
   }
 });
 

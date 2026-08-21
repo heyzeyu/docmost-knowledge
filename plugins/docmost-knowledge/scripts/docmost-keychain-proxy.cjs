@@ -2,6 +2,7 @@
 "use strict";
 
 const { execFileSync } = require("node:child_process");
+const { createPublicKey } = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -13,6 +14,12 @@ const {
   validateCatalogToolInput,
   validateCatalogToolResult,
 } = require("./catalog-bundle-contract.cjs");
+const {
+  CATALOG_V2_TOOLS,
+  CatalogV2ValidationError,
+  validateCatalogV2ToolInput,
+  validateCatalogV2ToolResult,
+} = require("./catalog-bundle-v2-contract.cjs");
 
 const DEFAULT_CONFIG_PATH = path.join(
   os.homedir(),
@@ -26,7 +33,7 @@ const DEFAULT_RETRY_DELAY_MS = 250;
 const DEFAULT_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const MAX_REQUEST_TIMEOUT_MS = 300_000;
 const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
-const SERVER_VERSION = "0.5.0";
+const SERVER_VERSION = "0.6.0";
 const PROXY_PROTOCOL_VERSION = "2025-11-25";
 const REMOTE_PROTOCOL_VERSION = "2025-06-18";
 const SUPPORTED_PROTOCOL_VERSIONS = new Set([
@@ -111,6 +118,9 @@ function getConfig(env = process.env, readFile = fs.readFileSync) {
     );
   }
 
+  const catalogPublicKeys = parseCatalogPublicKeys(
+    env.DOCMOST_CATALOG_PUBLIC_KEYS ?? profile.catalogPublicKeys,
+  );
   return {
     profileName,
     remoteUrl: remoteUrl.toString(),
@@ -148,6 +158,7 @@ function getConfig(env = process.env, readFile = fs.readFileSync) {
       1_024,
       MAX_RESPONSE_BYTES,
     ),
+    ...(catalogPublicKeys ? { catalogPublicKeys } : {}),
   };
 }
 
@@ -210,6 +221,49 @@ function rejectStoredToken(fileConfig) {
 
 function optionalString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function parseCatalogPublicKeys(value) {
+  if (value === undefined || value === null || value === "") return undefined;
+  let parsed = value;
+  if (typeof value === "string") {
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      throw new Error("DOCMOST_CATALOG_PUBLIC_KEYS must be valid JSON");
+    }
+  }
+  if (!isObject(parsed) || Object.keys(parsed).length === 0) {
+    throw new Error("catalogPublicKeys must be a non-empty object");
+  }
+  for (const [keyId, publicKey] of Object.entries(parsed)) {
+    if (
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(keyId) ||
+      typeof publicKey !== "string" ||
+      publicKey.length < 32
+    ) {
+      throw new Error("catalogPublicKeys contains an invalid key");
+    }
+    let decoded;
+    let keyObject;
+    try {
+      decoded = Buffer.from(publicKey, "base64url");
+      if (decoded.toString("base64url") !== publicKey) {
+        throw new Error("non-canonical base64url");
+      }
+      keyObject = createPublicKey({
+        key: decoded,
+        format: "der",
+        type: "spki",
+      });
+    } catch {
+      throw new Error("catalogPublicKeys contains an invalid public key");
+    }
+    if (keyObject.asymmetricKeyType !== "ed25519") {
+      throw new Error("catalogPublicKeys must contain Ed25519 public keys");
+    }
+  }
+  return { ...parsed };
 }
 
 function parseIntegerSetting(value, name, fallback, minimum, maximum) {
@@ -511,8 +565,11 @@ function createForward(
   try {
     const config = getConfigFn();
     const token = resolveTokenFn(config);
+    const forward = (method, params) =>
+      callRemoteFn(config, token, method, params);
+    forward.catalogPublicKeys = config.catalogPublicKeys;
     return {
-      forward: (method, params) => callRemoteFn(config, token, method, params),
+      forward,
       startupError: null,
     };
   } catch (error) {
@@ -593,6 +650,20 @@ async function dispatchRequest(message, forward) {
           throw error;
         }
       }
+      if (CATALOG_V2_TOOLS.includes(message.params.name)) {
+        try {
+          validateCatalogV2ToolInput(
+            message.params.name,
+            message.params.arguments,
+            { trustedPublicKeys: forward.catalogPublicKeys },
+          );
+        } catch (error) {
+          if (error instanceof CatalogV2ValidationError) {
+            throw new RpcError(ErrorCode.InvalidParams, error.message);
+          }
+          throw error;
+        }
+      }
       const result = await forward("tools/call", message.params);
       if (CATALOG_TOOLS.includes(message.params.name)) {
         try {
@@ -606,6 +677,24 @@ async function dispatchRequest(message, forward) {
             throw new RpcError(
               ErrorCode.InternalError,
               `Docmost Catalog response validation failed: ${error.message}`,
+            );
+          }
+          throw error;
+        }
+      }
+      if (CATALOG_V2_TOOLS.includes(message.params.name)) {
+        try {
+          validateCatalogV2ToolResult(
+            message.params.name,
+            message.params.arguments,
+            result,
+            { trustedPublicKeys: forward.catalogPublicKeys },
+          );
+        } catch (error) {
+          if (error instanceof CatalogV2ValidationError) {
+            throw new RpcError(
+              ErrorCode.InternalError,
+              `Docmost Catalog v2 response validation failed: ${error.message}`,
             );
           }
           throw error;
@@ -700,6 +789,7 @@ if (require.main === module) {
     getConfig,
     handleLine,
     parseIntegerSetting,
+    parseCatalogPublicKeys,
     readConfigFile,
     readBoundedJsonResponse,
     readTokenFromKeychain,

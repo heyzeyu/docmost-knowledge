@@ -22,21 +22,28 @@ async function main() {
     `Profile: ${config.profileName}\nEndpoint: ${config.remoteUrl}\nTools: ${report.toolCount}\n`,
   );
   process.stdout.write(
-    `Docmost MCP v0.5 core contract: ${
+    `Docmost MCP v0.6 core contract: ${
       report.coreCompatible ? "compatible" : "incompatible"
     }\n`,
   );
   process.stdout.write(
     report.catalog.compatible
-      ? "Catalog Bundle/Freshness: compatible\n"
+      ? "Catalog v1 Bundle/Freshness: compatible\n"
       : report.catalog.supported
-        ? "Catalog Bundle/Freshness: incompatible\n"
-        : "Catalog Bundle/Freshness: unsupported by this server (core tools remain usable)\n",
+        ? "Catalog v1 Bundle/Freshness: incompatible\n"
+        : "Catalog v1 Bundle/Freshness: unsupported by this server (optional legacy capability)\n",
+  );
+  process.stdout.write(
+    report.catalogV2.compatible
+      ? "Catalog v2 signed Bundle/Delta: compatible\n"
+      : report.catalogV2.supported
+        ? "Catalog v2 signed Bundle/Delta: incompatible\n"
+        : "Catalog v2 signed Bundle/Delta: unsupported by this server (core tools remain usable)\n",
   );
   if (!report.compatible) {
     const details = formatContractReport(report);
     if (!warnOnly) {
-      throw new Error(`Docmost MCP v0.5 contract check failed: ${details}`);
+      throw new Error(`Docmost MCP v0.6 contract check failed: ${details}`);
     }
     process.stdout.write(`Contract warnings: ${details}\n`);
   }

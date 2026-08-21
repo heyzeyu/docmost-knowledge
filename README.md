@@ -27,10 +27,11 @@ Keychain or an environment variable, then forwards MCP requests over HTTPS.
 - Attachment listing, upload, download, and confirmed deletion
 - Vector-index workflows exposed by the compatible server
 - Personal and company profiles with isolated endpoints and Keychain entries
-- Safe retry of known read-only tools across transient gateway failures
-- Optional freshness-verified Catalog Bundle and Delta consumption for
-  diagnostic orchestrators
-- A strict v0.5 core server-contract doctor and live smoke test
+- Safe retry of known read-only tools that do not consume one-use challenges
+- Optional signed Catalog Bundle v2 and trusted Delta consumption for
+  diagnostic orchestrators, with immutable v1 compatibility
+- Ed25519 proof verification with optional per-profile public-key pinning
+- A strict v0.6 core and optional-extension contract doctor and live smoke test
 - Bounded remote response streaming with a 16 MiB default limit
 - Local credential handling without storing secrets in the repository
 
@@ -126,18 +127,19 @@ For non-macOS environments, set `DOCMOST_MCP_TOKEN` in the environment
 inherited by Codex. You may also configure everything with environment
 variables:
 
-| Variable | Purpose |
-| --- | --- |
-| `DOCMOST_PROFILE` | Select a named profile from the JSON config |
-| `DOCMOST_MCP_URL` | Compatible HTTPS MCP endpoint |
-| `DOCMOST_MCP_TOKEN` | Bearer token; takes precedence over Keychain |
-| `DOCMOST_KEYCHAIN_SERVICE` | macOS Keychain service name |
-| `DOCMOST_KEYCHAIN_ACCOUNT` | macOS Keychain account name |
-| `DOCMOST_CONFIG_FILE` | Optional alternative path to the JSON config |
-| `DOCMOST_REQUEST_TIMEOUT_MS` | Per-request timeout, from 1,000 to 300,000 ms |
-| `DOCMOST_MAX_READ_RETRIES` | Transient retries for known read tools, from 0 to 3 |
-| `DOCMOST_RETRY_DELAY_MS` | Base read-retry delay, from 0 to 5,000 ms |
-| `DOCMOST_MAX_RESPONSE_BYTES` | Maximum remote JSON response, from 1 KiB to 32 MiB |
+| Variable                      | Purpose                                                                                                |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `DOCMOST_PROFILE`             | Select a named profile from the JSON config                                                            |
+| `DOCMOST_MCP_URL`             | Compatible HTTPS MCP endpoint                                                                          |
+| `DOCMOST_MCP_TOKEN`           | Bearer token; takes precedence over Keychain                                                           |
+| `DOCMOST_KEYCHAIN_SERVICE`    | macOS Keychain service name                                                                            |
+| `DOCMOST_KEYCHAIN_ACCOUNT`    | macOS Keychain account name                                                                            |
+| `DOCMOST_CONFIG_FILE`         | Optional alternative path to the JSON config                                                           |
+| `DOCMOST_REQUEST_TIMEOUT_MS`  | Per-request timeout, from 1,000 to 300,000 ms                                                          |
+| `DOCMOST_MAX_READ_RETRIES`    | Transient retries for known read tools, from 0 to 3                                                    |
+| `DOCMOST_RETRY_DELAY_MS`      | Base read-retry delay, from 0 to 5,000 ms                                                              |
+| `DOCMOST_MAX_RESPONSE_BYTES`  | Maximum remote JSON response, from 1 KiB to 32 MiB                                                     |
+| `DOCMOST_CATALOG_PUBLIC_KEYS` | Optional JSON object mapping trusted Catalog `key_id` values to Ed25519 SPKI DER base64url public keys |
 
 One plugin process selects one profile. To expose two profiles to Codex at the
 same time, define two intentionally named MCP server entries that run this
@@ -162,12 +164,23 @@ attachment, search, and vector-job tools from v0.4. It also verifies:
 - batch moves plus template archival and deletion require explicit confirmation
 
 Catalog Bundle/Freshness is an optional, negotiated extension. A server remains
-core-compatible when it exposes neither Catalog tool. If it exposes the
-extension, it must provide both `resolve_catalog_bundle` and
-`resolve_catalog_delta` with the `qts-fact-catalog.v1` request contract. The
-proxy validates full graph closure, page hashes, deterministic fingerprints,
-freshness proof, and Delta reconstruction before returning a result to the
-caller. A partial or malformed extension fails the contract check.
+core-compatible when it exposes no Catalog tools. The immutable v1 pair is
+`resolve_catalog_bundle` and `resolve_catalog_delta`. The preferred signed v2
+pair is `resolve_catalog_bundle_v2` and `resolve_catalog_delta_v2`; both still
+use the `qts-fact-catalog.v1` request selector contract while returning
+`catalog-bundle.v2`, `catalog-delta.v2`, and
+`catalog-freshness-proof.v2`. Each exposed version must advertise its complete
+pair. A partial or malformed pair fails the contract check.
+
+For v2, the proxy validates exact fields and canonical ordering, Markdown
+SHA-256 values, roots, known-root-cause candidates, graph closure, deterministic
+fingerprints, Ed25519 signatures, and complete Delta reconstruction before
+returning a result. The signed proof binds the challenge, snapshot window,
+requested roots, authorization context, page manifest, extractor version, and
+bundle fingerprint. HTTPS authenticates the endpoint; deployments that also
+want explicit signing-key identity can configure `catalogPublicKeys` per
+profile or `DOCMOST_CATALOG_PUBLIC_KEYS`. A configured pin is mandatory for
+that profile and supports multiple key IDs during rotation.
 
 Every new diagnosis must send a fresh challenge and receive a new live
 freshness proof. A caller may retain static page content only under its exact
@@ -177,10 +190,16 @@ prior diagnostic conclusions must never be reused across diagnoses. Remote
 Monkey execution does not read Catalog; only the local diagnostic orchestrator
 consumes these tools.
 
+The proxy never automatically retries either v2 Catalog tool because the
+server consumes its challenge before reading the Catalog. If transport outcome
+is ambiguous, discard that challenge and begin a new Bundle or Delta call with
+a fresh one.
+
 The local proxy handles `initialize` and `ping`, rejects redirects, validates
 remote responses, applies a configurable 90-second default timeout, preserves
 safe JSON-RPC errors on HTTP 409/429, retries only known read operations on
-HTTP 502/503/504, and avoids including credentials in error messages.
+HTTP 502/503/504 when replay is safe, and avoids including credentials in error
+messages.
 
 The plugin continues to use MCP even when the server also exposes a unified
 Developer API. A load balancer and multiple Docmost application replicas are
@@ -209,6 +228,20 @@ only after the server advertises both optional tools. Increase
 `maxResponseBytes` only when a legitimate bounded Catalog closure exceeds the
 16 MiB default; the proxy never permits more than 32 MiB.
 
+Upgrading from v0.5 to v0.6 preserves the core and immutable Catalog v1
+contracts. Signed fenced-YAML Catalog workflows use the separate v2 tool pair.
+Public-key pinning is optional and disabled by default, so existing profiles
+need no configuration change. To pin a server, add a non-secret map to one
+profile:
+
+```json
+{
+  "catalogPublicKeys": {
+    "catalog-ed25519-current": "<spki-der-base64url-public-key>"
+  }
+}
+```
+
 ## Development
 
 Run the local test suite:
@@ -219,7 +252,7 @@ npm test
 ```
 
 Validate local configuration, Keychain access, the remote tool catalog, and the
-strict v0.5 core contract and optional Catalog capability:
+strict v0.6 core contract and both optional Catalog capability versions:
 
 ```bash
 npm run doctor

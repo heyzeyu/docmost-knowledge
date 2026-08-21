@@ -59,7 +59,7 @@ function finish(error) {
   const report = analyzeToolCatalog(listed.result.tools);
   if (!report.compatible && !warnOnly) {
     process.stderr.write(
-      `Docmost MCP v0.5 contract check failed: ${formatContractReport(report)}\n`,
+      `Docmost MCP v0.6 contract check failed: ${formatContractReport(report)}\n`,
     );
     process.exitCode = 1;
     return;
@@ -72,10 +72,17 @@ function finish(error) {
   );
   process.stdout.write(
     report.catalog.compatible
-      ? "Catalog Bundle/Freshness: compatible.\n"
+      ? "Catalog v1 Bundle/Freshness: compatible.\n"
       : report.catalog.supported
-        ? "Catalog Bundle/Freshness: incompatible.\n"
-        : "Catalog Bundle/Freshness: unsupported by this server; core tools remain usable.\n",
+        ? "Catalog v1 Bundle/Freshness: incompatible.\n"
+        : "Catalog v1 Bundle/Freshness: unsupported by this server.\n",
+  );
+  process.stdout.write(
+    report.catalogV2.compatible
+      ? "Catalog v2 signed Bundle/Delta: compatible.\n"
+      : report.catalogV2.supported
+        ? "Catalog v2 signed Bundle/Delta: incompatible.\n"
+        : "Catalog v2 signed Bundle/Delta: unsupported by this server; core tools remain usable.\n",
   );
   if (!report.compatible) {
     process.stdout.write(`${formatContractReport(report)}\n`);

@@ -38,21 +38,30 @@ scraping or direct database access.
 
 ## Catalog workflow
 
-- Use `resolve_catalog_bundle` only when a diagnostic orchestrator needs a
-  structured `qts-fact-catalog.v1` reference closure. Ordinary knowledge search
-  continues to use `search_docs` or `semantic_search_docs`.
+- Prefer `resolve_catalog_bundle_v2` when a diagnostic orchestrator needs a
+  signed, structured `qts-fact-catalog.v1` reference closure. Use
+  `resolve_catalog_delta_v2` only with the exact prior signed proof and manifest.
+  Ordinary knowledge search continues to use `search_docs` or
+  `semantic_search_docs`.
+- Treat `resolve_catalog_bundle` and `resolve_catalog_delta` as immutable legacy
+  v1 compatibility tools. Do not silently downgrade a workflow that requires
+  signed freshness; report that v2 is unavailable instead.
 - Start every diagnosis with a fresh challenge of 16-128 UTF-8 bytes. Never
   carry a challenge or freshness proof into another diagnosis.
-- Use `resolve_catalog_bundle` when there is no revalidated local manifest. Use
-  `resolve_catalog_delta` with the previous fingerprint and page tuples only
+- Never retry a v2 Catalog call with the same challenge after an ambiguous
+  transport failure. Start a new call with a fresh challenge.
+- Use `resolve_catalog_bundle_v2` when there is no revalidated local manifest.
+  Use `resolve_catalog_delta_v2` with the previous fingerprint, page tuples,
+  and signed freshness proof only
   to revalidate a static cache and reconstruct the current closure.
 - Reuse cached Markdown only when the current proof returns the exact same
   `(page_id, updated_at, content_sha256)` tuple. Never reuse prior runtime
   facts, incident conclusions, or unverified page content.
 - Treat missing Catalog tools as an unsupported optional capability, not as a
-  failure of ordinary Docmost work. Treat one missing tool, a challenge
-  mismatch, hash mismatch, incomplete Delta partition, or invalid fingerprint
-  as a hard Catalog validation failure.
+  failure of ordinary Docmost work. Treat one missing tool in an advertised
+  version pair, a challenge mismatch, hash mismatch, signing-key mismatch,
+  incomplete Delta partition, or invalid fingerprint as a hard Catalog
+  validation failure.
 
 ## Write safety
 

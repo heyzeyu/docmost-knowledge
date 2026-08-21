@@ -2,15 +2,15 @@
 
 ## Search and read
 
-| Goal | Preferred sequence |
-| --- | --- |
-| Discover accessible areas | `list_spaces` |
-| Browse one tree level | `list_pages` with a parent and explicit pagination |
-| Inspect an ordered subtree | `get_page_tree` with bounded depth and limit |
-| Find exact names or IDs | `search_docs` in `keyword` mode |
-| Find concepts or related notes | `search_docs` in `hybrid` mode |
-| Search inside one page subtree | `search_docs` with that page's `rootPageId` |
-| Read authoritative content | `get_page` in `markdown` format |
+| Goal                           | Preferred sequence                                 |
+| ------------------------------ | -------------------------------------------------- |
+| Discover accessible areas      | `list_spaces`                                      |
+| Browse one tree level          | `list_pages` with a parent and explicit pagination |
+| Inspect an ordered subtree     | `get_page_tree` with bounded depth and limit       |
+| Find exact names or IDs        | `search_docs` in `keyword` mode                    |
+| Find concepts or related notes | `search_docs` in `hybrid` mode                     |
+| Search inside one page subtree | `search_docs` with that page's `rootPageId`        |
+| Read authoritative content     | `get_page` in `markdown` format                    |
 
 Search snippets are discovery evidence, not the authoritative page body.
 `rootPageId` includes the selected readable page and its descendants. Resolve
@@ -20,20 +20,29 @@ Do not pass a title or slug where a UUID is required.
 ## Catalog Bundle and freshness
 
 Catalog resolution is a diagnostic-orchestrator workflow, not a replacement
-for ordinary Docmost search. Use `resolve_catalog_bundle` for the first current
-closure and `resolve_catalog_delta` only when a prior static manifest is
-available.
+for ordinary Docmost search. Prefer `resolve_catalog_bundle_v2` for the first
+current closure and `resolve_catalog_delta_v2` only when a prior signed proof
+and static manifest are available. The unsuffixed tools are immutable v1
+compatibility endpoints and are not a silent fallback for signed-freshness
+workflows.
 
 For every diagnosis:
 
 1. Generate a fresh 16-128 byte challenge and send the explicit Catalog root,
    environment, and root selectors.
-2. Require a matching `catalog-freshness-proof.v1` challenge echo from a
-   read-only, repeatable-read snapshot.
-3. Verify every Markdown SHA-256, the complete page partition, graph edges,
-   unresolved references, closure status, and Bundle fingerprint. The local
-   proxy performs these checks and must reject any mismatch.
+2. Require a matching signed `catalog-freshness-proof.v2` from a read-only,
+   repeatable-read snapshot. The proof must bind the authorization context,
+   requested roots, page manifest, extractor version, and Bundle fingerprint.
+3. Verify every Markdown SHA-256, the complete page partition, resolved-root
+   candidate applicability, graph edges, unresolved references, closure status,
+   Bundle fingerprint, and Ed25519 signature. The local proxy performs these
+   checks and must reject any mismatch. When a profile configures public-key
+   pins, the proof key ID and public key must match one of those pins.
 4. Consume the current closure only after that live proof succeeds.
+
+The local proxy deliberately does not replay v2 Catalog requests. When a
+transport failure leaves the outcome uncertain, use a fresh challenge for the
+next Bundle or Delta call.
 
 A cache key is exactly `(page_id, updated_at, content_sha256)`. Cached Markdown
 may be reused only after the current Bundle or Delta proves that same tuple is
