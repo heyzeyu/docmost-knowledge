@@ -1,7 +1,8 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "docmost-knowledge",
   "version": "0.6.1",
-  "description": "Search, maintain, organize, cite, and resolve freshness-verified Catalog bundles in private Docmost knowledge bases through a Keychain-authenticated MCP connection.",
+  "description": "Search, maintain, organize, cite, and resolve freshness-verified Catalog bundles in private Docmost knowledge bases through Keychain-authenticated MCP connections.",
   "author": {
     "name": "heyzeyu",
     "url": "https://github.com/heyzeyu"
@@ -10,14 +11,14 @@
   "repository": "https://github.com/heyzeyu/docmost-knowledge",
   "license": "MIT",
   "keywords": [
-    "workbuddy",
-    "codebuddy",
+    "claude-code",
     "docmost",
     "knowledge-base",
     "mcp",
     "vector-search",
     "keychain"
   ],
-  "skills": "./skills/",
-  "mcpServers": "./.workbuddy-mcp.json"
+  "displayName": "Docmost Knowledge",
+  "mcpServers": "./.claude-mcp.json",
+  "skills": "./skills/"
 }

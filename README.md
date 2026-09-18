@@ -1,10 +1,10 @@
 # Docmost Knowledge
 
-An open-source Codex and WorkBuddy plugin for searching, templating, and
-maintaining a private Docmost knowledge base through a permission-scoped MCP
-endpoint.
+An open-source Codex, WorkBuddy, and Claude Code plugin for searching,
+templating, and maintaining a private Docmost knowledge base through a
+permission-scoped MCP endpoint.
 
-The plugin gives Codex and WorkBuddy operational guidance for knowledge work
+The plugin gives every supported client operational guidance for knowledge work
 and runs a small local stdio proxy. The proxy reads a bearer token from macOS
 Keychain or an environment variable, then forwards MCP requests over HTTPS.
 
@@ -40,7 +40,7 @@ broadens the token's space permissions.
 
 ## Requirements
 
-- Codex or Tencent WorkBuddy with plugin support
+- Codex, Tencent WorkBuddy, or Claude Code with plugin support
 - Node.js 20 or newer
 - A credential-free HTTPS MCP endpoint compatible with this plugin
 - A bearer token issued by that server
@@ -53,7 +53,7 @@ broadens the token's space permissions.
 Add this repository as a Codex marketplace and install its plugin:
 
 ```bash
-codex plugin marketplace add wzyonline-1999/docmost-knowledge
+codex plugin marketplace add heyzeyu/docmost-knowledge
 codex plugin add docmost-knowledge@open-context
 ```
 
@@ -65,7 +65,7 @@ Add this GitHub repository as a WorkBuddy/CodeBuddy plugin marketplace, then
 install `docmost-knowledge@open-context` and reload plugins:
 
 ```bash
-/plugin marketplace add wzyonline-1999/docmost-knowledge
+/plugin marketplace add heyzeyu/docmost-knowledge
 /plugin install docmost-knowledge@open-context
 /reload-plugins
 ```
@@ -76,6 +76,32 @@ MCP launcher so the two clients can resolve their plugin roots and the
 WorkBuddy-managed Node runtime correctly.
 Do not also configure a manual `docmost-knowledge` MCP entry in the same
 client, or the tools will be registered twice.
+
+### Claude Code
+
+Add this GitHub repository as a Claude Code plugin marketplace, then install
+`docmost-knowledge@open-context`:
+
+```bash
+claude plugin marketplace add heyzeyu/docmost-knowledge
+claude plugin install docmost-knowledge@open-context
+```
+
+Restart Claude Code after installation. The same commands are available as
+`/plugin marketplace add` and `/plugin install` inside a session.
+
+The Claude Code package uses the same `SKILL.md`, MCP proxy, configuration
+file, and Keychain entries as the other clients. Claude Code cannot set a
+working directory for an MCP server, so its launcher resolves the bundled
+proxy through `${CLAUDE_PLUGIN_ROOT}` instead, in its own `.claude-mcp.json`.
+Do not also configure a manual `docmost-knowledge` MCP entry in the same
+client, or the tools will be registered twice.
+
+This plugin deliberately ships no `.mcp.json` at its plugin root. Every
+supported host reads that file on top of whatever its own manifest declares,
+so one shared copy cannot serve all three: Claude Code would register the
+proxy twice, and CodeBuddy starts no server at all when the two sources
+declare the same server name. Each host points at its own configuration.
 
 ## Configure
 
@@ -104,8 +130,8 @@ keeps personal and company credentials separate:
 ```
 
 Set `defaultProfile` to the profile the installed plugin should use, or set
-`DOCMOST_PROFILE` before starting Codex. A legacy single-profile object with
-`mcpUrl`, `keychainService`, and `keychainAccount` remains supported.
+`DOCMOST_PROFILE` before starting the client. A legacy single-profile object
+with `mcpUrl`, `keychainService`, and `keychainAccount` remains supported.
 The same example is available at
 `plugins/docmost-knowledge/examples/config.multi-profile.json`.
 
@@ -124,7 +150,7 @@ unset DOCMOST_TOKEN
 ```
 
 For non-macOS environments, set `DOCMOST_MCP_TOKEN` in the environment
-inherited by Codex. You may also configure everything with environment
+inherited by the client. You may also configure everything with environment
 variables:
 
 | Variable                      | Purpose                                                                                                |
@@ -141,8 +167,8 @@ variables:
 | `DOCMOST_MAX_RESPONSE_BYTES`  | Maximum remote JSON response, from 1 KiB to 32 MiB                                                     |
 | `DOCMOST_CATALOG_PUBLIC_KEYS` | Optional JSON object mapping trusted Catalog `key_id` values to Ed25519 SPKI DER base64url public keys |
 
-One plugin process selects one profile. To expose two profiles to Codex at the
-same time, define two intentionally named MCP server entries that run this
+One plugin process selects one profile. To expose two profiles to a client at
+the same time, define two intentionally named MCP server entries that run this
 proxy with different `DOCMOST_PROFILE` values. Do not keep an old manually
 configured server that points to the same profile as the installed plugin.
 
@@ -209,9 +235,10 @@ PostgreSQL, Redis, object storage, secrets, and permission model.
 ## Upgrade
 
 The plugin registers an MCP server named `docmost-knowledge`. Remove an older
-manual `[mcp_servers.docmost]` entry when it invokes a hard-coded proxy for the
-same endpoint. Keeping both produces duplicate tools and can make Codex select
-the wrong server.
+manual entry that invokes a hard-coded proxy for the same endpoint: an
+`[mcp_servers.docmost]` block in Codex `config.toml`, or a `docmost` entry
+under `mcpServers` in Claude Code or WorkBuddy configuration. Keeping both
+produces duplicate tools and can make the client select the wrong server.
 
 Existing single-profile JSON configuration continues to work. Convert it to
 `profiles` only when you need separate personal, company-test, or company

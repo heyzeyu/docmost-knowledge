@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.1 - 2026-09-18
+
+- Added a Claude Code plugin manifest and marketplace entry.
+- Added a Claude Code MCP launcher in `.claude-mcp.json` that resolves the
+  bundled proxy with `CLAUDE_PLUGIN_ROOT`, because Claude Code cannot set a
+  server working directory.
+- Removed the plugin-root `.mcp.json`, which every supported host reads on top
+  of its own manifest: Claude Code registered the proxy twice, and CodeBuddy
+  started no server at all when both sources named the same server. Codex now
+  carries its server configuration inline in `.codex-plugin/plugin.json`.
+- Kept the WorkBuddy package, and every client's profiles and Keychain
+  credential flow, unchanged.
+- Renamed the stale `wzyonline-1999` repository owner to `heyzeyu` in the
+  manifests, install documentation, and LICENSE.
+- Added Claude Code manifest regression coverage and install documentation.
+
 ## 0.6.0 - 2026-08-21
 
 - Added separately negotiated `resolve_catalog_bundle_v2` and

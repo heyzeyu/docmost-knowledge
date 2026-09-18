@@ -422,7 +422,7 @@ test("initialize is handled locally", async () => {
 
   assert.equal(result.protocolVersion, "2025-11-25");
   assert.equal(result.serverInfo.name, "docmost-knowledge");
-  assert.equal(result.serverInfo.version, "0.6.0");
+  assert.equal(result.serverInfo.version, "0.6.1");
   assert.deepEqual(result.capabilities, { tools: { listChanged: false } });
 });
 
