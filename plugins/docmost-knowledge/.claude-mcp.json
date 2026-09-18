@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "docmost-knowledge": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/scripts/docmost-keychain-proxy.cjs"
+      ]
+    }
+  }
+}

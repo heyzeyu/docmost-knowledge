@@ -19,9 +19,9 @@ test("plugin and package versions stay aligned", () => {
   const packageJson = readJson("package.json");
 
   assert.equal(manifest.name, "docmost-knowledge");
-  assert.equal(manifest.version, "0.6.0");
+  assert.equal(manifest.version, "0.6.1");
   assert.equal(packageJson.version, manifest.version);
-  assert.equal(manifest.mcpServers, "./.mcp.json");
+  assert.equal(typeof manifest.mcpServers, "object");
   assert.ok(manifest.interface.defaultPrompt.length <= 3);
 });
 
@@ -96,11 +96,14 @@ test("Catalog guidance requires live freshness and tuple-bound cache reuse", () 
   assert.match(operations, /never reuse runtime\s+facts/i);
 });
 
-test("MCP manifest points to existing scripts with sufficient timeout", () => {
-  const mcpManifest = readJson(".mcp.json");
-  const server = mcpManifest.mcpServers["docmost-knowledge"];
+test("Codex MCP manifest points to existing scripts with sufficient timeout", () => {
+  const manifest = readJson(".codex-plugin/plugin.json");
+  const server = manifest.mcpServers["docmost-knowledge"];
 
   assert.equal(server.command, "node");
+  // Codex resolves the relative args against `cwd`, which it sets to the
+  // plugin root; without it the proxy is looked up in the caller's directory.
+  assert.equal(server.cwd, ".");
   assert.ok(server.tool_timeout_sec >= 120);
   for (const script of server.args) {
     assert.equal(fs.existsSync(path.join(pluginRoot, script)), true);
@@ -157,11 +160,64 @@ test("WorkBuddy manifest uses a portable plugin-root MCP path", () => {
   assert.equal(marketplacePlugin.version, manifest.version);
 });
 
+test("Claude Code manifest uses a portable plugin-root MCP path", () => {
+  const manifest = readJson(".claude-plugin/plugin.json");
+  const packageJson = readJson("package.json");
+  const mcpManifest = readJson(".claude-mcp.json");
+  const marketplace = JSON.parse(
+    fs.readFileSync(
+      path.join(repositoryRoot, ".claude-plugin/marketplace.json"),
+      "utf8",
+    ),
+  );
+  const server = mcpManifest.mcpServers["docmost-knowledge"];
+  const marketplacePlugin = marketplace.plugins.find(
+    (plugin) => plugin.name === "docmost-knowledge",
+  );
+
+  assert.equal(manifest.name, "docmost-knowledge");
+  assert.equal(manifest.version, packageJson.version);
+  assert.equal(manifest.skills, "./skills/");
+  assert.equal(manifest.mcpServers, "./.claude-mcp.json");
+  assert.equal(server.command, "node");
+  assert.deepEqual(server.args, [
+    "${CLAUDE_PLUGIN_ROOT}/scripts/docmost-keychain-proxy.cjs",
+  ]);
+  assert.equal(
+    fs.existsSync(path.join(pluginRoot, "scripts/docmost-keychain-proxy.cjs")),
+    true,
+  );
+  assert.equal(marketplace.name, "open-context");
+  assert.equal(marketplacePlugin.source, "./plugins/docmost-knowledge");
+  assert.equal(marketplacePlugin.version, manifest.version);
+});
+
+test("no plugin-root .mcp.json exists, because every host reads it", () => {
+  const claudeManifest = readJson(".claude-plugin/plugin.json");
+  const codexManifest = readJson(".codex-plugin/plugin.json");
+  const codebuddyManifest = readJson(".codebuddy-plugin/plugin.json");
+  const claudeServer = readJson(".claude-mcp.json").mcpServers[
+    "docmost-knowledge"
+  ];
+
+  // A plugin-root .mcp.json is read by all three hosts on top of whatever
+  // their own manifest declares: Claude Code registers the proxy a second
+  // time, and CodeBuddy starts no server at all when the two sources collide
+  // on a server name. Every host therefore declares its own config instead.
+  assert.equal(fs.existsSync(path.join(pluginRoot, ".mcp.json")), false);
+  assert.equal(claudeManifest.mcpServers, "./.claude-mcp.json");
+  assert.equal(typeof codexManifest.mcpServers, "object");
+  assert.equal(codebuddyManifest.mcpServers, "./.workbuddy-mcp.json");
+  // Claude Code has no `cwd` and ignores Codex's timeout key.
+  assert.doesNotMatch(JSON.stringify(claudeServer), /"cwd"|"tool_timeout_sec"/);
+});
+
 test("plugin source contains no unfinished placeholders", () => {
   const files = [
+    ".claude-plugin/plugin.json",
+    ".claude-mcp.json",
     ".codex-plugin/plugin.json",
     ".codebuddy-plugin/plugin.json",
-    ".mcp.json",
     ".workbuddy-mcp.json",
     "package.json",
     "skills/docmost-knowledge/SKILL.md",

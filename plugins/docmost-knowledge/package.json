@@ -1,14 +1,14 @@
 {
   "name": "docmost-knowledge-plugin",
-  "version": "0.6.0",
-  "description": "A permission-aware multi-profile Codex and WorkBuddy plugin for self-hosted Docmost knowledge bases.",
+  "version": "0.6.1",
+  "description": "A permission-aware multi-profile Codex, WorkBuddy, and Claude Code plugin for self-hosted Docmost knowledge bases.",
   "type": "commonjs",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/wzyonline-1999/docmost-knowledge.git"
+    "url": "git+https://github.com/heyzeyu/docmost-knowledge.git"
   },
-  "homepage": "https://github.com/wzyonline-1999/docmost-knowledge#readme",
+  "homepage": "https://github.com/heyzeyu/docmost-knowledge#readme",
   "engines": {
     "node": ">=20"
   },
